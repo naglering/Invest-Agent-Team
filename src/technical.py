@@ -49,19 +49,54 @@ def analyze_technical(ticker_symbol: str, period: str = "6mo") -> dict:
 
     signals = []
 
-    # --- RSI (14일) ---
-    rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14)
-    rsi_value = _safe_round(rsi_indicator.rsi().iloc[-1])
+    # --- RSI (14일, Signal 7일) - SMA 기반 + Wilder 기반 둘 다 계산 ---
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
 
-    rsi_signal = _signal(rsi_value, 30, 70)
+    # SMA 기반 RSI (한국 증권사 표준)
+    avg_gain_sma = gain.rolling(window=14).mean()
+    avg_loss_sma = loss.rolling(window=14).mean()
+    rs_sma = avg_gain_sma / avg_loss_sma
+    rsi_sma_series = 100 - (100 / (1 + rs_sma))
+    rsi_sma_value = _safe_round(rsi_sma_series.iloc[-1])
+    rsi_sma_signal_line = _safe_round(rsi_sma_series.rolling(window=7).mean().iloc[-1])
+
+    # Wilder's Smoothing RSI (글로벌 표준)
+    rsi_wilder_indicator = ta.momentum.RSIIndicator(close=close, window=14)
+    rsi_wilder_series = rsi_wilder_indicator.rsi()
+    rsi_wilder_value = _safe_round(rsi_wilder_series.iloc[-1])
+    rsi_wilder_signal_line = _safe_round(rsi_wilder_series.rolling(window=7).mean().iloc[-1])
+
+    # 시그널 판정은 SMA 기반 기준
+    rsi_signal = _signal(rsi_sma_value, 30, 70)
     signals.append(rsi_signal)
 
+    # RSI-Signal 크로스오버 감지 (SMA 기반)
+    rsi_sma_sig = rsi_sma_series.rolling(window=7).mean()
+    rsi_crossover = "없음"
+    if len(rsi_sma_series.dropna()) >= 2 and len(rsi_sma_sig.dropna()) >= 2:
+        prev_diff = float(rsi_sma_series.dropna().iloc[-2]) - float(rsi_sma_sig.dropna().iloc[-2])
+        curr_diff = float(rsi_sma_series.dropna().iloc[-1]) - float(rsi_sma_sig.dropna().iloc[-1])
+        if prev_diff < 0 and curr_diff >= 0:
+            rsi_crossover = "골든크로스 (RSI가 Signal 상향 돌파)"
+        elif prev_diff > 0 and curr_diff <= 0:
+            rsi_crossover = "데드크로스 (RSI가 Signal 하향 돌파)"
+
     rsi = {
-        "value": rsi_value,
+        "sma": {
+            "value": rsi_sma_value,
+            "signal_line": rsi_sma_signal_line,
+        },
+        "wilder": {
+            "value": rsi_wilder_value,
+            "signal_line": rsi_wilder_signal_line,
+        },
+        "crossover": rsi_crossover,
         "signal": rsi_signal,
         "interpretation": (
-            "과매도 구간 (반등 가능성)" if rsi_value and rsi_value < 30
-            else "과매수 구간 (조정 가능성)" if rsi_value and rsi_value > 70
+            "과매도 구간 (반등 가능성)" if rsi_sma_value and rsi_sma_value < 30
+            else "과매수 구간 (조정 가능성)" if rsi_sma_value and rsi_sma_value > 70
             else "중립 구간"
         ),
     }
