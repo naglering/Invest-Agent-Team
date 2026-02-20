@@ -1,0 +1,12 @@
+{
+  "name": "기본 투자 mandate",
+  "max_position_pct": 10,
+  "min_market_cap_usd": 1000000000,
+  "allowed_sectors": [],
+  "excluded_sectors": [],
+  "max_pe_ratio": 50,
+  "min_dividend_yield": 0,
+  "max_debt_to_equity": 3.0,
+  "risk_tolerance": "moderate",
+  "description": "일반적인 분산 투자 전략. 중간 위험 허용도, 대형주 중심."
+}
