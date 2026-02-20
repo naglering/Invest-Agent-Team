@@ -91,6 +91,67 @@ def get_earnings(ticker_symbol: str) -> dict:
         call_dt = datetime.fromtimestamp(call_ts)
         earnings_call = call_dt.strftime("%Y-%m-%d %H:%M")
 
+    # --- 실적 서프라이즈 이력 (earnings_history) ---
+    earnings_history = []
+    beat_count = 0
+    total_history = 0
+    try:
+        earnings_dates_df = ticker.earnings_dates
+        if earnings_dates_df is not None and not earnings_dates_df.empty:
+            for idx, row in earnings_dates_df.head(8).iterrows():
+                estimate = row.get("EPS Estimate")
+                actual = row.get("Reported EPS")
+                surprise_pct = row.get("Surprise(%)")
+
+                record = {
+                    "date": str(idx.date()) if hasattr(idx, 'date') else str(idx),
+                    "eps_estimate": float(estimate) if estimate is not None and str(estimate) != "nan" else None,
+                    "eps_actual": float(actual) if actual is not None and str(actual) != "nan" else None,
+                    "surprise_pct": float(surprise_pct) if surprise_pct is not None and str(surprise_pct) != "nan" else None,
+                }
+                earnings_history.append(record)
+                if record["eps_estimate"] is not None and record["eps_actual"] is not None:
+                    total_history += 1
+                    if record["eps_actual"] >= record["eps_estimate"]:
+                        beat_count += 1
+    except Exception:
+        pass
+
+    beat_rate = round(beat_count / total_history * 100, 1) if total_history > 0 else None
+
+    # --- 추정치 변동 추세 (estimate_revisions) ---
+    estimate_revisions = {}
+    try:
+        eps_trend = getattr(ticker, "eps_trend", None)
+        if eps_trend is not None and not eps_trend.empty:
+            for col in eps_trend.columns:
+                col_data = {}
+                for idx_name in eps_trend.index:
+                    val = eps_trend.loc[idx_name, col]
+                    if val is not None and str(val) != "nan":
+                        col_data[str(idx_name)] = float(val)
+                if col_data:
+                    estimate_revisions[str(col)] = col_data
+    except Exception:
+        pass
+
+    if not estimate_revisions:
+        try:
+            eps_revisions = getattr(ticker, "eps_revisions", None)
+            if eps_revisions is not None and not eps_revisions.empty:
+                for col in eps_revisions.columns:
+                    col_data = {}
+                    for idx_name in eps_revisions.index:
+                        val = eps_revisions.loc[idx_name, col]
+                        if val is not None and str(val) != "nan":
+                            col_data[str(idx_name)] = float(val)
+                    if col_data:
+                        estimate_revisions[str(col)] = col_data
+        except Exception:
+            pass
+
+    analyst_count = info.get("numberOfAnalystOpinions")
+
     return {
         "ticker": ticker_symbol,
         "company_name": info.get("longName") or info.get("shortName", "N/A"),
@@ -122,6 +183,14 @@ def get_earnings(ticker_symbol: str) -> dict:
             "earnings_growth_pct": round(earnings_growth * 100, 2) if earnings_growth and abs(earnings_growth) < 10 else earnings_growth,
             "quarterly_earnings_growth_pct": round(quarterly_growth * 100, 2) if quarterly_growth and abs(quarterly_growth) < 10 else quarterly_growth,
         },
+        "earnings_history": {
+            "records": earnings_history,
+            "beat_rate_pct": beat_rate,
+            "beat_count": beat_count,
+            "total_count": total_history,
+        },
+        "estimate_revisions": estimate_revisions,
+        "analyst_count": analyst_count,
         "dividend_schedule": {
             "next_dividend_date": dividend_date.isoformat() if isinstance(dividend_date, date) else str(dividend_date) if dividend_date else None,
             "ex_dividend_date": ex_dividend_date.isoformat() if isinstance(ex_dividend_date, date) else str(ex_dividend_date) if ex_dividend_date else None,

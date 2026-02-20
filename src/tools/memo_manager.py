@@ -42,6 +42,10 @@ MEMO_TEMPLATE = """# 투자 메모: {ticker} ({company_name})
 
 {financial_summary}
 
+## 밸류에이션 분석 요약
+
+{valuation_summary}
+
 ## 기술적 분석 요약
 
 {technical_summary}
@@ -52,9 +56,22 @@ MEMO_TEMPLATE = """# 투자 메모: {ticker} ({company_name})
 
 ## 투자 결정
 
-- **결정**: {decision}
+### 현재 보유자
+- **권고**: {decision_holder}
+
+### 신규 투자자
+- **권고**: {decision_new}
+
 - **목표가**: {target_price}
 - **손절가**: {stop_loss}
+
+## 포지션 사이징
+
+{position_sizing}
+
+## 시나리오 분석
+
+{scenario_analysis}
 
 ## 후속 조치
 
@@ -83,6 +100,10 @@ def write_memo(ticker: str, data: dict) -> dict:
     _ensure_dir()
     date = datetime.now().strftime("%Y-%m-%d")
 
+    # decision 하위 호환: 기존 단일 decision 필드도 지원
+    decision_holder = data.get("decision_holder", data.get("decision", "N/A"))
+    decision_new = data.get("decision_new", data.get("decision", "N/A"))
+
     content = MEMO_TEMPLATE.format(
         ticker=ticker.upper(),
         company_name=data.get("company_name", "N/A"),
@@ -91,11 +112,15 @@ def write_memo(ticker: str, data: dict) -> dict:
         conviction=data.get("conviction", "N/A"),
         thesis=data.get("thesis", "N/A"),
         financial_summary=data.get("financial_summary", "N/A"),
+        valuation_summary=data.get("valuation_summary", "N/A"),
         technical_summary=data.get("technical_summary", "N/A"),
         risk_factors=data.get("risk_factors", "N/A"),
-        decision=data.get("decision", "N/A"),
+        decision_holder=decision_holder,
+        decision_new=decision_new,
         target_price=data.get("target_price", "N/A"),
         stop_loss=data.get("stop_loss", "N/A"),
+        position_sizing=data.get("position_sizing", "N/A"),
+        scenario_analysis=data.get("scenario_analysis", "N/A"),
         follow_up=data.get("follow_up", "N/A"),
     )
 

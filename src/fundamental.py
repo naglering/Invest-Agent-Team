@@ -1,5 +1,6 @@
 """재무 분석 모듈 - yfinance 기반 펀더멘털 데이터 수집 및 분석"""
 
+import pandas as pd
 import yfinance as yf
 
 
@@ -191,6 +192,114 @@ def analyze_fundamentals(ticker_symbol: str) -> dict:
         "dividend_yield_pct": _safe_round(_safe_get(info, "dividendYield") or 0),
     }
 
+    # --- 분기별 추세 (quarterly_trends) ---
+    quarterly_trends = []
+    try:
+        q_income = ticker.quarterly_income_stmt
+        if q_income is not None and not q_income.empty:
+            cols = list(q_income.columns)[:8]  # 최근 8분기
+            for col in cols:
+                q_rev = None
+                q_op = None
+                q_ni = None
+                for name in ["Total Revenue", "Revenue"]:
+                    if name in q_income.index and pd.notna(q_income.loc[name, col]):
+                        q_rev = float(q_income.loc[name, col])
+                        break
+                for name in ["Operating Income", "EBIT"]:
+                    if name in q_income.index and pd.notna(q_income.loc[name, col]):
+                        q_op = float(q_income.loc[name, col])
+                        break
+                for name in ["Net Income", "Net Income Common Stockholders"]:
+                    if name in q_income.index and pd.notna(q_income.loc[name, col]):
+                        q_ni = float(q_income.loc[name, col])
+                        break
+
+                op_margin = _safe_round(q_op / q_rev * 100) if q_rev and q_op else None
+                ni_margin = _safe_round(q_ni / q_rev * 100) if q_rev and q_ni else None
+
+                quarterly_trends.append({
+                    "quarter": str(col.date()) if hasattr(col, 'date') else str(col),
+                    "revenue": q_rev,
+                    "operating_income": q_op,
+                    "net_income": q_ni,
+                    "operating_margin_pct": op_margin,
+                    "net_margin_pct": ni_margin,
+                })
+
+            # QoQ/YoY 성장률 계산
+            for i, qt in enumerate(quarterly_trends):
+                # QoQ (직전 분기 대비)
+                if i + 1 < len(quarterly_trends) and quarterly_trends[i + 1]["revenue"]:
+                    qt["revenue_qoq_pct"] = _calc_growth_rate(qt["revenue"], quarterly_trends[i + 1]["revenue"])
+                # YoY (4분기 전 대비)
+                if i + 4 < len(quarterly_trends) and quarterly_trends[i + 4]["revenue"]:
+                    qt["revenue_yoy_pct"] = _calc_growth_rate(qt["revenue"], quarterly_trends[i + 4]["revenue"])
+    except Exception:
+        pass
+
+    # --- DuPont 분해 ---
+    dupont = {}
+    try:
+        roe_val = profitability.get("roe_pct")
+        if revenue and net_income and revenue > 0:
+            net_profit_margin = net_income / revenue
+        else:
+            net_profit_margin = None
+
+        total_assets = _get_latest_value(balance_sheet, ["Total Assets"])
+        asset_turnover = revenue / total_assets if revenue and total_assets and total_assets > 0 else None
+        equity_multiplier = total_assets / total_equity if total_assets and total_equity and total_equity > 0 else None
+
+        dupont = {
+            "net_profit_margin_pct": _safe_round(net_profit_margin * 100) if net_profit_margin else None,
+            "asset_turnover": _safe_round(asset_turnover),
+            "equity_multiplier": _safe_round(equity_multiplier),
+            "roe_decomposed_pct": _safe_round(
+                net_profit_margin * asset_turnover * equity_multiplier * 100
+            ) if net_profit_margin and asset_turnover and equity_multiplier else None,
+            "roe_reported_pct": roe_val,
+        }
+    except Exception:
+        pass
+
+    # --- 추가 비율 ---
+    quick_ratio = _safe_get(info, "quickRatio")
+    ebitda_margins = _safe_get(info, "ebitdaMargins")
+    if ebitda_margins and abs(ebitda_margins) < 10:
+        ebitda_margins = _safe_round(ebitda_margins * 100)
+    else:
+        ebitda_margins = _safe_round(ebitda_margins)
+
+    total_assets_val = _get_latest_value(balance_sheet, ["Total Assets"])
+    asset_turnover_ratio = _safe_round(revenue / total_assets_val) if revenue and total_assets_val and total_assets_val > 0 else None
+    fcf_margin = _safe_round(fcf / revenue * 100) if fcf and revenue and revenue > 0 else None
+
+    additional_ratios = {
+        "quick_ratio": _safe_round(quick_ratio),
+        "ebitda_margin_pct": ebitda_margins,
+        "fcf_margin_pct": fcf_margin,
+        "asset_turnover": asset_turnover_ratio,
+    }
+
+    # --- 애널리스트 컨센서스 ---
+    target_mean = _safe_get(info, "targetMeanPrice")
+    target_high = _safe_get(info, "targetHighPrice")
+    target_low = _safe_get(info, "targetLowPrice")
+    analyst_count = _safe_get(info, "numberOfAnalystOpinions")
+    recommendation = _safe_get(info, "recommendationKey")
+
+    analyst_upside = _safe_round((target_mean / current_price - 1) * 100) if target_mean and current_price else None
+
+    analyst_consensus = {
+        "target_mean": target_mean,
+        "target_high": target_high,
+        "target_low": target_low,
+        "analyst_count": analyst_count,
+        "recommendation": recommendation,
+        "upside_pct": analyst_upside,
+    }
+
     return {
         "basic_info": basic_info,
         "profitability": profitability,
@@ -198,4 +307,8 @@ def analyze_fundamentals(ticker_symbol: str) -> dict:
         "financial_health": financial_health,
         "cash_flow": cash_flow,
         "valuation": valuation,
+        "quarterly_trends": quarterly_trends,
+        "dupont": dupont,
+        "additional_ratios": additional_ratios,
+        "analyst_consensus": analyst_consensus,
     }

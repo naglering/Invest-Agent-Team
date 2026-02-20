@@ -15,6 +15,20 @@ MANDATE_PATH = os.path.join(DATA_DIR, "mandates", "default.json")
 MARKET_TICKER = "SPY"  # S&P 500 ETF (베타 계산용)
 RISK_FREE_RATE = 0.045  # 무위험 수익률 (미국 10년물 근사)
 
+SECTOR_ETF_MAP = {
+    "Technology": "XLK",
+    "Healthcare": "XLV",
+    "Financial Services": "XLF",
+    "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Basic Materials": "XLB",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+    "Communication Services": "XLC",
+}
+
 
 def _load_mandate() -> dict:
     """기본 mandate 파일을 로드한다."""
@@ -90,6 +104,108 @@ def analyze_risk(ticker_symbol: str, period: str = "1y") -> dict:
     current_price = float(close.iloc[-1])
     position_52w = round((current_price - low_52w) / (high_52w - low_52w) * 100, 1) if high_52w != low_52w else 50.0
 
+    # --- 소르티노 비율 ---
+    downside_returns = daily_returns[daily_returns < 0]
+    downside_std = float(downside_returns.std()) * np.sqrt(252) if len(downside_returns) > 0 else None
+    sortino_ratio = None
+    if downside_std and downside_std > 0:
+        sortino_ratio = round((mean_annual_return - RISK_FREE_RATE) / downside_std, 3)
+
+    # --- CVaR (Expected Shortfall) ---
+    var_95_returns = daily_returns[daily_returns <= var_95]
+    cvar_95 = float(var_95_returns.mean()) if len(var_95_returns) > 0 else None
+    var_99_returns = daily_returns[daily_returns <= var_99]
+    cvar_99 = float(var_99_returns.mean()) if len(var_99_returns) > 0 else None
+
+    # --- 상관관계 분석 ---
+    correlations = {}
+    benchmark_tickers = {"SPY": "S&P 500", "QQQ": "NASDAQ 100"}
+
+    # 섹터 ETF 추가
+    try:
+        ticker_info = yf.Ticker(ticker_symbol).info or {}
+        sector = ticker_info.get("sector", "")
+        sector_etf = SECTOR_ETF_MAP.get(sector)
+        if sector_etf:
+            benchmark_tickers[sector_etf] = f"섹터 ETF ({sector})"
+    except Exception:
+        pass
+
+    for bench_ticker, bench_name in benchmark_tickers.items():
+        try:
+            bench_df = yf.Ticker(bench_ticker).history(period=period)
+            if not bench_df.empty:
+                bench_returns = bench_df["Close"].pct_change().dropna()
+                common_idx = daily_returns.index.intersection(bench_returns.index)
+                if len(common_idx) > 20:
+                    corr = float(np.corrcoef(
+                        daily_returns.loc[common_idx].values,
+                        bench_returns.loc[common_idx].values
+                    )[0][1])
+                    correlations[bench_ticker] = {
+                        "name": bench_name,
+                        "correlation": round(corr, 3),
+                        "interpretation": (
+                            "강한 양의 상관" if corr > 0.7
+                            else "보통 양의 상관" if corr > 0.4
+                            else "약한 상관" if corr > -0.4
+                            else "음의 상관"
+                        ),
+                    }
+        except Exception:
+            pass
+
+    # --- 포지션 사이징 ---
+    mandate = _load_mandate()
+    max_position_pct = mandate.get("max_position_pct", 10)
+
+    # VaR 기반 최대 비중: 포트폴리오의 VaR 기여를 1% 이내로 제한
+    var_based_max = None
+    if var_95 and abs(var_95) > 0:
+        var_based_max = round(min(1.0 / abs(var_95), 100), 1)
+
+    # Half-Kelly Criterion
+    kelly_pct = None
+    win_rate = float(len(daily_returns[daily_returns > 0]) / len(daily_returns)) if len(daily_returns) > 0 else None
+    if win_rate and win_rate > 0 and win_rate < 1:
+        avg_win = float(daily_returns[daily_returns > 0].mean()) if len(daily_returns[daily_returns > 0]) > 0 else 0
+        avg_loss = float(abs(daily_returns[daily_returns < 0].mean())) if len(daily_returns[daily_returns < 0]) > 0 else 0
+        if avg_loss > 0:
+            win_loss_ratio = avg_win / avg_loss
+            kelly_full = win_rate - (1 - win_rate) / win_loss_ratio
+            kelly_pct = round(max(kelly_full * 50, 0), 1)  # Half Kelly, as %
+
+    recommended_pct = min(
+        var_based_max if var_based_max else max_position_pct,
+        kelly_pct if kelly_pct else max_position_pct,
+        max_position_pct,
+    )
+
+    position_sizing = {
+        "var_based_max_pct": var_based_max,
+        "half_kelly_pct": kelly_pct,
+        "mandate_max_pct": max_position_pct,
+        "recommended_pct": round(recommended_pct, 1),
+        "entry_size_pct": round(recommended_pct * 0.5, 1),  # 1회 진입: 절반
+    }
+
+    # --- 스트레스 테스트 ---
+    stress_scenarios = []
+    for scenario_name, market_drop in [("경미 (-5%)", -0.05), ("중간 (-15%)", -0.15), ("심각 (-30%)", -0.30)]:
+        expected_loss = market_drop * (beta if beta else 1.0)
+        expected_price = round(current_price * (1 + expected_loss), 2)
+        stress_scenarios.append({
+            "scenario": scenario_name,
+            "market_drop_pct": round(market_drop * 100, 1),
+            "expected_loss_pct": round(expected_loss * 100, 2),
+            "expected_price": expected_price,
+        })
+
+    stress_test = {
+        "beta_used": beta,
+        "scenarios": stress_scenarios,
+    }
+
     return {
         "ticker": ticker_symbol,
         "period": period,
@@ -101,7 +217,9 @@ def analyze_risk(ticker_symbol: str, period: str = "1y") -> dict:
         "var": {
             "var_95_daily_pct": round(var_95 * 100, 3),
             "var_99_daily_pct": round(var_99 * 100, 3),
-            "interpretation": f"95% 신뢰도: 일일 최대 {abs(round(var_95 * 100, 2))}% 손실 예상",
+            "cvar_95_daily_pct": round(cvar_95 * 100, 3) if cvar_95 else None,
+            "cvar_99_daily_pct": round(cvar_99 * 100, 3) if cvar_99 else None,
+            "interpretation": f"95% 신뢰도: 일일 최대 {abs(round(var_95 * 100, 2))}% 손실 예상 (평균 {abs(round(cvar_95 * 100, 2))}%)" if cvar_95 else f"95% 신뢰도: 일일 최대 {abs(round(var_95 * 100, 2))}% 손실 예상",
         },
         "max_drawdown": {
             "value_pct": round(max_drawdown * 100, 2),
@@ -127,6 +245,18 @@ def analyze_risk(ticker_symbol: str, period: str = "1y") -> dict:
                 else "계산 불가"
             ),
         },
+        "sortino_ratio": {
+            "value": sortino_ratio,
+            "interpretation": (
+                "우수 (하방 리스크 대비 수익 양호)" if sortino_ratio and sortino_ratio > 1.5
+                else "보통" if sortino_ratio and sortino_ratio > 0
+                else "부진" if sortino_ratio is not None
+                else "계산 불가"
+            ),
+        },
+        "correlations": correlations,
+        "position_sizing": position_sizing,
+        "stress_test": stress_test,
         "price_range_52w": {
             "high": round(high_52w, 2),
             "low": round(low_52w, 2),

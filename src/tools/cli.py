@@ -8,6 +8,9 @@
     python src/tools/cli.py earnings <TICKER>
     python src/tools/cli.py risk <TICKER>
     python src/tools/cli.py mandate-check <TICKER>
+    python src/tools/cli.py valuation <TICKER>
+    python src/tools/cli.py peers <TICKER>
+    python src/tools/cli.py insider <TICKER>
     python src/tools/cli.py memo list
     python src/tools/cli.py memo read <TICKER>
     python src/tools/cli.py memo search "<QUERY>"
@@ -61,6 +64,21 @@ def cmd_risk(ticker: str) -> dict:
 def cmd_mandate_check(ticker: str) -> dict:
     from tools.risk_analyzer import check_mandate
     return check_mandate(ticker)
+
+
+def cmd_valuation(ticker: str) -> dict:
+    from tools.valuation import analyze_valuation
+    return analyze_valuation(ticker)
+
+
+def cmd_peers(ticker: str) -> dict:
+    from tools.peer_comparison import compare_peers
+    return compare_peers(ticker)
+
+
+def cmd_insider(ticker: str) -> dict:
+    from tools.insider_analysis import analyze_insider
+    return analyze_insider(ticker)
 
 
 def cmd_memo(subcommand: str, args: list) -> dict:
@@ -128,6 +146,21 @@ def main():
             if not args:
                 raise ValueError("사용법: mandate-check <TICKER>")
             result = cmd_mandate_check(args[0].upper())
+
+        elif command == "valuation":
+            if not args:
+                raise ValueError("사용법: valuation <TICKER>")
+            result = cmd_valuation(args[0].upper())
+
+        elif command == "peers":
+            if not args:
+                raise ValueError("사용법: peers <TICKER>")
+            result = cmd_peers(args[0].upper())
+
+        elif command == "insider":
+            if not args:
+                raise ValueError("사용법: insider <TICKER>")
+            result = cmd_insider(args[0].upper())
 
         elif command == "memo":
             if not args:

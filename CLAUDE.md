@@ -2,7 +2,7 @@
 
 ## 프로젝트 개요
 
-멀티 에이전트 투자 분석 시스템. Claude Code Agent Teams 기반으로 7+1명의 전문 에이전트가 협업하여 종합 투자 판단을 수행한다.
+멀티 에이전트 투자 분석 시스템. Claude Code Agent Teams 기반으로 8+1명의 전문 에이전트가 협업하여 종합 투자 판단을 수행한다.
 
 ## 통합 CLI 사용법
 
@@ -16,6 +16,9 @@ python3 src/tools/cli.py news <TICKER>           # 뉴스 수집
 python3 src/tools/cli.py earnings <TICKER>       # 실적발표 일정 + 컨센서스
 python3 src/tools/cli.py risk <TICKER>           # 리스크 분석
 python3 src/tools/cli.py mandate-check <TICKER>  # mandate 준수 확인
+python3 src/tools/cli.py valuation <TICKER>      # DCF/상대가치 분석
+python3 src/tools/cli.py peers <TICKER>           # 동종업계 비교
+python3 src/tools/cli.py insider <TICKER>         # 내부자 거래/기관보유
 
 # 웹 검색
 python3 src/tools/cli.py news-search "<QUERY>"   # 뉴스 키워드 검색 (yfinance)
@@ -48,10 +51,13 @@ python3 src/main.py <TICKER>
 1. **헤더**: 티커, 회사명, 작성일, 분석가
 2. **투자 논거 (Thesis)**: 핵심 투자 이유
 3. **재무 요약**: 주요 재무 지표
-4. **기술적 분석 요약**: 주요 기술적 시그널
-5. **리스크 요인**: 식별된 위험 요소
-6. **투자 결정**: 매수/매도/관망 + 확신도
-7. **후속 조치**: 모니터링 항목
+4. **밸류에이션 분석 요약**: DCF, 상대가치, 역내재 분석
+5. **기술적 분석 요약**: 주요 기술적 시그널
+6. **리스크 요인**: 식별된 위험 요소
+7. **투자 결정**: 이중 추천 (보유자: 비중 유지/확대/축소, 신규: 매수/관망/회피) + 확신도
+8. **포지션 사이징**: 권고 비중, 최대 비중, 진입 비중
+9. **시나리오 분석**: Bull/Base/Bear 시나리오별 목표가와 확률
+10. **후속 조치**: 모니터링 항목
 
 ## 에이전트 간 소통 규칙
 
