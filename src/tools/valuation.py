@@ -25,8 +25,12 @@ def _calc_wacc(beta: float) -> float:
     return RISK_FREE_RATE + beta * EQUITY_RISK_PREMIUM
 
 
-def _dcf_value(fcf: float, growth: float, wacc: float, shares: int) -> float | None:
-    """10년 DCF + 영구가치로 내재가치 산출"""
+def _dcf_value(fcf: float, growth: float, wacc: float, shares: int) -> dict | None:
+    """2단계 DCF + 영구가치로 내재가치 산출
+
+    Phase 1 (1~5년): high_growth 그대로 적용
+    Phase 2 (6~10년): high_growth에서 TERMINAL_GROWTH까지 선형 체감(fade)
+    """
     if fcf is None or fcf <= 0 or shares is None or shares <= 0:
         return None
     if wacc <= TERMINAL_GROWTH:
@@ -34,14 +38,28 @@ def _dcf_value(fcf: float, growth: float, wacc: float, shares: int) -> float | N
 
     pv_sum = 0.0
     projected_fcf = fcf
+    phase2_growths = []
     for year in range(1, DCF_YEARS + 1):
-        projected_fcf *= (1 + growth)
+        if year <= 5:
+            yearly_growth = growth
+        else:
+            fade_factor = (year - 5) / 5  # 0.2, 0.4, 0.6, 0.8, 1.0
+            yearly_growth = growth * (1 - fade_factor) + TERMINAL_GROWTH * fade_factor
+            phase2_growths.append(yearly_growth)
+        projected_fcf *= (1 + yearly_growth)
         pv_sum += projected_fcf / (1 + wacc) ** year
 
     terminal_value = projected_fcf * (1 + TERMINAL_GROWTH) / (wacc - TERMINAL_GROWTH)
     pv_terminal = terminal_value / (1 + wacc) ** DCF_YEARS
     enterprise_value = pv_sum + pv_terminal
-    return round(enterprise_value / shares, 2)
+    intrinsic = round(enterprise_value / shares, 2)
+    phase2_avg = round(sum(phase2_growths) / len(phase2_growths) * 100, 2) if phase2_growths else None
+
+    return {
+        "intrinsic_value": intrinsic,
+        "phase1_growth_pct": round(growth * 100, 2),
+        "phase2_avg_growth_pct": phase2_avg,
+    }
 
 
 def _implied_growth(fcf: float, wacc: float, shares: int, market_cap: float) -> float | None:
@@ -54,10 +72,10 @@ def _implied_growth(fcf: float, wacc: float, shares: int, market_cap: float) -> 
     lo, hi = -0.10, 0.50
     for _ in range(100):
         mid = (lo + hi) / 2
-        val = _dcf_value(fcf, mid, wacc, shares)
-        if val is None:
+        result = _dcf_value(fcf, mid, wacc, shares)
+        if result is None:
             return None
-        if val < target_price:
+        if result["intrinsic_value"] < target_price:
             lo = mid
         else:
             hi = mid
@@ -121,8 +139,9 @@ def analyze_valuation(ticker_symbol: str) -> dict:
     # 성장률 상한/하한 적용 (DCF에서 비현실적 성장률 방지)
     base_growth = max(min(base_growth, 0.30), -0.10)  # -10% ~ +30%
 
-    # --- 간이 DCF ---
-    intrinsic_value = _dcf_value(fcf, base_growth, wacc, shares)
+    # --- 2단계 DCF ---
+    dcf_result = _dcf_value(fcf, base_growth, wacc, shares)
+    intrinsic_value = dcf_result["intrinsic_value"] if dcf_result else None
     upside_pct = round((intrinsic_value / current_price - 1) * 100, 2) if intrinsic_value and current_price else None
 
     dcf = {
@@ -131,24 +150,27 @@ def analyze_valuation(ticker_symbol: str) -> dict:
         "assumptions": {
             "fcf": fcf,
             "growth_rate_pct": round(base_growth * 100, 2),
+            "phase1_growth_pct": dcf_result["phase1_growth_pct"] if dcf_result else None,
+            "phase2_avg_growth_pct": dcf_result["phase2_avg_growth_pct"] if dcf_result else None,
             "wacc_pct": round(wacc * 100, 2),
             "terminal_growth_pct": round(TERMINAL_GROWTH * 100, 2),
             "beta": beta,
             "years": DCF_YEARS,
+            "model": "2-stage (Phase1: 1-5yr high growth, Phase2: 6-10yr fade to terminal)",
         },
     }
 
-    # --- 민감도 매트릭스 (성장률 ±2%p × WACC ±1%p, 3×3) ---
+    # --- 민감도 매트릭스 (Phase1 성장률 ±2%p × WACC ±1%p, 3×3) ---
     growth_offsets = [-0.02, 0.0, 0.02]
     wacc_offsets = [-0.01, 0.0, 0.01]
     sensitivity = []
     for g_off in growth_offsets:
         row = []
         for w_off in wacc_offsets:
-            val = _dcf_value(fcf, base_growth + g_off, wacc + w_off, shares)
-            row.append(val)
+            r = _dcf_value(fcf, base_growth + g_off, wacc + w_off, shares)
+            row.append(r["intrinsic_value"] if r else None)
         sensitivity.append({
-            "growth_pct": round((base_growth + growth_offsets[growth_offsets.index(g_off)]) * 100, 2),
+            "growth_pct": round((base_growth + g_off) * 100, 2),
             "values": {
                 f"wacc_{round((wacc + w) * 100, 1)}": row[i]
                 for i, w in enumerate(wacc_offsets)

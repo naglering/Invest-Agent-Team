@@ -181,6 +181,69 @@ def analyze_fundamentals(ticker_symbol: str) -> dict:
         "free_cash_flow": fcf,
     }
 
+    # --- 운전자본 & 재고 분석 ---
+    inventory = _get_latest_value(balance_sheet, ["Inventory", "Net Inventory"])
+    prev_inventory = _get_prev_value(balance_sheet, ["Inventory", "Net Inventory"])
+    receivables = _get_latest_value(balance_sheet, ["Net Receivables", "Accounts Receivable", "Receivables"])
+    payables = _get_latest_value(balance_sheet, ["Accounts Payable", "Payables And Accrued Expenses"])
+
+    working_capital = {
+        "inventory": inventory,
+        "inventory_prev": prev_inventory,
+        "inventory_change_pct": _calc_growth_rate(inventory, prev_inventory),
+        "receivables": receivables,
+        "payables": payables,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
+        "working_capital": current_assets - current_liabilities if current_assets and current_liabilities else None,
+    }
+
+    # --- ROIC ---
+    cash = _get_latest_value(balance_sheet, ["Cash And Cash Equivalents", "Cash"])
+    tax_rate_val = _safe_get(info, "taxRate")
+    if tax_rate_val is None or tax_rate_val == 0:
+        tax_expense = _get_latest_value(income_stmt, ["Tax Provision", "Income Tax Expense"])
+        pretax_income = _get_latest_value(income_stmt, ["Pretax Income", "Income Before Tax"])
+        tax_rate_val = abs(tax_expense / pretax_income) if tax_expense and pretax_income and pretax_income != 0 else 0.21
+    elif tax_rate_val > 1:
+        tax_rate_val = tax_rate_val / 100
+
+    nopat = operating_income * (1 - tax_rate_val) if operating_income else None
+    invested_capital = None
+    if total_equity is not None:
+        ic = total_equity + (total_debt or 0) - (cash or 0)
+        invested_capital = ic if ic > 0 else None
+    roic_pct = _safe_round(nopat / invested_capital * 100) if nopat and invested_capital and invested_capital != 0 else None
+
+    roic = {
+        "nopat": nopat,
+        "invested_capital": invested_capital,
+        "roic_pct": roic_pct,
+        "tax_rate_used": _safe_round(tax_rate_val, 4),
+    }
+
+    # --- 이익의 질 (Earnings Quality) ---
+    total_assets_eq = _get_latest_value(balance_sheet, ["Total Assets"])
+    fcf_to_net_income = _safe_round(fcf / net_income) if fcf and net_income and net_income != 0 else None
+    accruals_ratio = _safe_round((net_income - operating_cf) / total_assets_eq * 100) if net_income and operating_cf and total_assets_eq and total_assets_eq != 0 else None
+
+    earnings_quality = {
+        "fcf_to_net_income": fcf_to_net_income,
+        "fcf_to_net_income_interpretation": (
+            "양호 (현금 전환 우수)" if fcf_to_net_income and fcf_to_net_income >= 1.0
+            else "보통" if fcf_to_net_income and fcf_to_net_income >= 0.5
+            else "우려 (현금 전환 부족)" if fcf_to_net_income is not None
+            else "N/A"
+        ),
+        "accruals_ratio_pct": accruals_ratio,
+        "accruals_interpretation": (
+            "양호 (발생액 낮음)" if accruals_ratio is not None and abs(accruals_ratio) < 5
+            else "주의 (발생액 보통)" if accruals_ratio is not None and abs(accruals_ratio) < 10
+            else "우려 (발생액 높음)" if accruals_ratio is not None
+            else "N/A"
+        ),
+    }
+
     # --- 밸류에이션 ---
     valuation = {
         "pe_ratio": _safe_round(_safe_get(info, "trailingPE")),
@@ -306,6 +369,9 @@ def analyze_fundamentals(ticker_symbol: str) -> dict:
         "growth": growth,
         "financial_health": financial_health,
         "cash_flow": cash_flow,
+        "working_capital": working_capital,
+        "roic": roic,
+        "earnings_quality": earnings_quality,
         "valuation": valuation,
         "quarterly_trends": quarterly_trends,
         "dupont": dupont,

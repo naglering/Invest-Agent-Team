@@ -16,6 +16,8 @@
    python3 src/tools/cli.py news $ARGUMENTS
    python3 src/tools/cli.py risk $ARGUMENTS
    python3 src/tools/cli.py earnings $ARGUMENTS
+   python3 src/tools/cli.py peers $ARGUMENTS                    # 자동 피어
+   python3 src/tools/cli.py peers $ARGUMENTS --peers T1,T2,T3   # 또는 커스텀 피어
    ```
 
 3. JSON 결과를 파싱하여 아래 형식의 **한국어 종합 분석 보고서**를 작성합니다.

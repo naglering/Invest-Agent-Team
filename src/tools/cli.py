@@ -71,9 +71,9 @@ def cmd_valuation(ticker: str) -> dict:
     return analyze_valuation(ticker)
 
 
-def cmd_peers(ticker: str) -> dict:
+def cmd_peers(ticker: str, custom_peers: list = None) -> dict:
     from tools.peer_comparison import compare_peers
-    return compare_peers(ticker)
+    return compare_peers(ticker, custom_peers=custom_peers)
 
 
 def cmd_insider(ticker: str) -> dict:
@@ -154,8 +154,14 @@ def main():
 
         elif command == "peers":
             if not args:
-                raise ValueError("사용법: peers <TICKER>")
-            result = cmd_peers(args[0].upper())
+                raise ValueError("사용법: peers <TICKER> [--peers T1,T2,T3]")
+            ticker_arg = args[0].upper()
+            custom_peers = None
+            for i, a in enumerate(args[1:], 1):
+                if a == "--peers" and i + 1 < len(args):
+                    custom_peers = [p.strip().upper() for p in args[i + 1].split(",") if p.strip()]
+                    break
+            result = cmd_peers(ticker_arg, custom_peers=custom_peers)
 
         elif command == "insider":
             if not args:

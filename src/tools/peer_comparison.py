@@ -69,8 +69,12 @@ def _extract_metrics(info: dict) -> dict:
     }
 
 
-def compare_peers(ticker_symbol: str, max_peers: int = 5) -> dict:
-    """동종업계 피어 비교 분석을 수행한다."""
+def compare_peers(ticker_symbol: str, max_peers: int = 5, custom_peers: list = None) -> dict:
+    """동종업계 피어 비교 분석을 수행한다.
+
+    Args:
+        custom_peers: 커스텀 피어 티커 목록. 제공되면 하드코딩 맵 대신 사용.
+    """
     ticker = yf.Ticker(ticker_symbol)
     info = ticker.info or {}
 
@@ -83,7 +87,10 @@ def compare_peers(ticker_symbol: str, max_peers: int = 5) -> dict:
 
     target_metrics = _extract_metrics(info)
 
-    peer_tickers = _get_peer_tickers(industry, ticker_symbol)[:max_peers]
+    if custom_peers:
+        peer_tickers = [p for p in custom_peers if p.upper() != ticker_symbol.upper()][:max_peers]
+    else:
+        peer_tickers = _get_peer_tickers(industry, ticker_symbol)[:max_peers]
 
     if not peer_tickers:
         return {
