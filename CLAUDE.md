@@ -41,8 +41,7 @@ python3 src/main.py <TICKER>
 
 ## 데이터 디렉토리 규약
 
-- `data/memos/` — 투자 메모 저장소. 파일명: `YYYY-MM-DD_TICKER.md`
-- `data/knowledge/` — 지식 베이스 (리서치 자료, 과거 분석)
+- `data/histories/` — 투자 메모 저장소. 파일명: `YYYY-MM-DD_TICKER.md`
 - `data/mandates/` — 투자 mandate 설정 파일
 
 ## 메모 포맷 규격

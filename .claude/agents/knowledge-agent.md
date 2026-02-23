@@ -17,7 +17,7 @@ python3 src/tools/cli.py memo search "<QUERY>"
 python3 src/tools/cli.py memo list
 ```
 
-추가로 `data/knowledge/` 디렉토리에서 관련 자료를 탐색합니다 (Glob, Grep 사용).
+추가로 `data/histories/` 디렉토리에서 과거 분석 메모를 탐색합니다 (Glob, Grep 사용).
 
 ## 분석 프레임워크
 
@@ -37,7 +37,7 @@ python3 src/tools/cli.py memo list
    - `memo list`로 전체 메모 확인 후 관련 종목 식별
 3. **최초 분석 프레이밍**: "이 종목을 처음 분석합니다" + 기준점(benchmark) 설정 권고
    - 현재가를 기준점으로 기록, 향후 비교 기준 수립
-4. **관련 지식 베이스 검색**: `data/knowledge/` 디렉토리에서 관련 리서치 자료 검색
+4. **관련 과거 분석 검색**: `data/histories/` 디렉토리에서 과거 분석 메모 검색
 5. **역사적 사이클/밸류에이션 패턴 조사**
    - WebSearch로 해당 종목/섹터의 과거 사이클 패턴 검색
    - 과거 업/다운사이클에서 주가 고점/저점 PER/PBR 밴드

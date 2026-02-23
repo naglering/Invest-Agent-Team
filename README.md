@@ -160,8 +160,7 @@ invest-principal/
 │   ├── agents/                  # 에이전트 프롬프트 정의 (8명)
 │   └── commands/invest/         # 슬래시 커맨드 정의 (6개)
 ├── data/
-│   ├── memos/                   # 투자 메모 (YYYY-MM-DD_TICKER.md)
-│   ├── knowledge/               # 지식 베이스
+│   ├── histories/               # 투자 메모 (YYYY-MM-DD_TICKER.md)
 │   └── mandates/                # 투자 mandate 설정
 ├── CLAUDE.md                    # 프로젝트 지침
 ├── requirements.txt

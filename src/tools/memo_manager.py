@@ -1,7 +1,7 @@
 """메모 관리 도구 - Memo Writer 에이전트용
 
 투자 메모 작성, 조회, 검색 기능 제공.
-메모 저장 위치: data/memos/YYYY-MM-DD_TICKER.md
+메모 저장 위치: data/histories/YYYY-MM-DD_TICKER.md
 """
 
 import os
@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
-MEMOS_DIR = os.path.join(DATA_DIR, "memos")
+MEMOS_DIR = os.path.join(DATA_DIR, "histories")
 
 
 def _ensure_dir():
