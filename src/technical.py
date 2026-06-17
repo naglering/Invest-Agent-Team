@@ -362,10 +362,39 @@ def analyze_technical(ticker_symbol: str, period: str = "6mo") -> dict:
     except Exception:
         pass
 
-    # --- 종합 시그널 ---
+    # --- 추세 확인 (정배열 + ADX 강추세 + 상승방향) ---
+    trend_confirmed = bool(
+        sma_20 and sma_50 and current_price > sma_20 > sma_50
+        and (sma_200 is None or sma_50 > sma_200)
+        and adx_value and adx_value > 25
+        and plus_di and minus_di and plus_di > minus_di
+    )
+
+    # --- 종합 시그널 (추세 확인 시 과매수=강세 재해석) ---
+    # 모멘텀 주도주는 강세장에서 RSI 70+·%B>1·스토캐스틱 80+를 수주간 유지하며 상승(밴드워킹).
+    # 추세가 확인되면 이 '과매수 매도' 표를 매도로 세지 않는다(추세 추종 관점). 과매도 매수는 유지.
+    adj = {
+        "rsi": rsi_signal,
+        "macd": macd_signal,
+        "bollinger_bands": bb_signal,
+        "moving_averages": ma_signal,
+        "volume": vol_signal,
+        "adx": adx_signal,
+        "stochastic": stoch_signal,
+    }
+    reinterpreted = []
+    if trend_confirmed:
+        if rsi_signal == "매도" and rsi_sma_value and rsi_sma_value >= 70:
+            adj["rsi"] = "매수"; reinterpreted.append("RSI 과매수→추세강세")
+        if bb_signal == "매도" and bb_pband is not None and bb_pband >= 1.0:
+            adj["bollinger_bands"] = "매수"; reinterpreted.append("볼린저 상단돌파(밴드워킹)→강세")
+        if stoch_signal == "매도" and stoch_k and stoch_k >= 80:
+            adj["stochastic"] = "중립"; reinterpreted.append("스토캐스틱 과매수→추세장 중립화")
+
     score_map = {"매수": 1, "중립": 0, "매도": -1}
-    total_score = sum(score_map.get(s, 0) for s in signals)
-    max_score = len(signals)
+    raw_score = sum(score_map.get(s, 0) for s in signals)
+    total_score = sum(score_map.get(s, 0) for s in adj.values())
+    max_score = len(adj)
 
     if total_score >= 3:
         overall_signal = "매수"
@@ -376,18 +405,18 @@ def analyze_technical(ticker_symbol: str, period: str = "6mo") -> dict:
 
     summary = {
         "current_price": _safe_round(current_price),
-        "signals": {
-            "rsi": rsi_signal,
-            "macd": macd_signal,
-            "bollinger_bands": bb_signal,
-            "moving_averages": ma_signal,
-            "volume": vol_signal,
-            "adx": adx_signal,
-            "stochastic": stoch_signal,
+        "trend_confirmed": trend_confirmed,
+        "signals": adj,
+        "raw_signals": {
+            "rsi": rsi_signal, "macd": macd_signal, "bollinger_bands": bb_signal,
+            "moving_averages": ma_signal, "volume": vol_signal, "adx": adx_signal, "stochastic": stoch_signal,
         },
+        "reinterpreted": reinterpreted,
         "score": total_score,
+        "raw_score": raw_score,
         "max_score": max_score,
         "overall_signal": overall_signal,
+        "note": "추세 확인(정배열+ADX>25+상승) 시 과매수 매도신호를 강세로 재해석. raw_score는 재해석 전 점수." if trend_confirmed else None,
     }
 
     return {

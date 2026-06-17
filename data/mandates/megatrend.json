@@ -1,0 +1,12 @@
+{
+  "name": "메가트렌드 공격 mandate",
+  "max_position_pct": 25,
+  "min_market_cap_usd": 200000000,
+  "allowed_sectors": [],
+  "excluded_sectors": [],
+  "max_pe_ratio": null,
+  "min_dividend_yield": 0,
+  "max_debt_to_equity": 5.0,
+  "risk_tolerance": "aggressive",
+  "description": "메가트렌드(AI/반도체, SMR·원자력, 우주, 비만치료제, 양자, 방산, 데이터센터 전력) 집중·모멘텀 베팅 전략. PER 게이트 비활성(고성장은 P/S·매출성장·룰40으로 평가), 고변동·고베타 허용, 승자 집중·피라미딩 허용. 리스크는 거부권이 아니라 손절 규율과 포지션 사이징으로 관리한다."
+}

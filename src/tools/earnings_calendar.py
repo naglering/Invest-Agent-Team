@@ -3,9 +3,14 @@
 yfinance의 calendar 및 info 데이터를 활용한다.
 """
 
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 import yfinance as yf
+
+
+def _growth_pct(g):
+    """yfinance growth(소수, 0.5=50%)를 % 정수로. None만 제외하고 0.0도 정상 처리."""
+    return round(g * 100, 2) if g is not None else None
 
 
 def get_earnings(ticker_symbol: str) -> dict:
@@ -26,7 +31,7 @@ def get_earnings(ticker_symbol: str) -> dict:
     except Exception:
         pass
 
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
 
     # --- 실적발표 일정 ---
     earnings_dates = calendar.get("Earnings Date", [])
@@ -54,11 +59,11 @@ def get_earnings(ticker_symbol: str) -> dict:
         ts_start = info.get("earningsTimestampStart")
         ts_end = info.get("earningsTimestampEnd")
         if ts_start:
-            dt = datetime.fromtimestamp(ts_start)
+            dt = datetime.fromtimestamp(ts_start, tz=timezone.utc)
             earnings_date_str = dt.strftime("%Y-%m-%d")
             days_until_earnings = (dt.date() - today).days
         elif ts_end:
-            dt = datetime.fromtimestamp(ts_end)
+            dt = datetime.fromtimestamp(ts_end, tz=timezone.utc)
             earnings_date_str = dt.strftime("%Y-%m-%d")
             days_until_earnings = (dt.date() - today).days
 
@@ -88,8 +93,8 @@ def get_earnings(ticker_symbol: str) -> dict:
     call_ts = info.get("earningsCallTimestampStart")
     earnings_call = None
     if call_ts:
-        call_dt = datetime.fromtimestamp(call_ts)
-        earnings_call = call_dt.strftime("%Y-%m-%d %H:%M")
+        call_dt = datetime.fromtimestamp(call_ts, tz=timezone.utc)
+        earnings_call = call_dt.strftime("%Y-%m-%d %H:%M UTC")
 
     # --- 실적 서프라이즈 이력 (earnings_history) ---
     earnings_history = []
@@ -180,8 +185,8 @@ def get_earnings(ticker_symbol: str) -> dict:
         "recent_performance": {
             "trailing_eps": trailing_eps,
             "forward_eps": forward_eps,
-            "earnings_growth_pct": round(earnings_growth * 100, 2) if earnings_growth and abs(earnings_growth) < 10 else earnings_growth,
-            "quarterly_earnings_growth_pct": round(quarterly_growth * 100, 2) if quarterly_growth and abs(quarterly_growth) < 10 else quarterly_growth,
+            "earnings_growth_pct": _growth_pct(earnings_growth),
+            "quarterly_earnings_growth_pct": _growth_pct(quarterly_growth),
         },
         "earnings_history": {
             "records": earnings_history,

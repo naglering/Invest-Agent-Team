@@ -54,16 +54,42 @@ MEMO_TEMPLATE = """# 투자 메모: {ticker} ({company_name})
 
 {risk_factors}
 
+## 서사·모멘텀·자금흐름
+
+<!-- 메가트렌드 테마, 상대강도(RS), 섹터 자금유입 등 정성적 모멘텀 상태 요약 -->
+{narrative_momentum}
+
 ## 투자 결정
 
 ### 현재 보유자
+<!-- 3분기 권고: ① 비중 유지(Hold) ② 비중 확대-피라미딩(Add) ③ 비중 축소(Trim) 중 택일 -->
+<!-- 예시: "비중 확대(피라미딩) — 신고가 안착 시 추가 진입, 현 RS 우위 지속" -->
 - **권고**: {decision_holder}
 
 ### 신규 투자자
 - **권고**: {decision_new}
 
 - **목표가**: {target_price}
-- **손절가**: {stop_loss}
+
+### 손절 체계 (손실은 짧게, 이익은 길게)
+<!-- 단일 손절값이 아닌 초기 손절 + 트레일링 규칙으로 분리 운용 -->
+- **초기 손절가(initial stop)**: {stop_loss}
+- **트레일링 규칙(trailing stop)**: {trailing_stop_rule}
+  <!-- 예: "20일선 종가 이탈 시 청산", "직전 고점 대비 -15% 추격손절" -->
+
+### 비대칭 손익비 (Payoff / R-multiple)
+<!-- 상방(현재가→목표가)과 하방(현재가→초기손절)의 비율. 예: 3:1 이면 +3R / -1R -->
+- **손익비**: {payoff_ratio}
+
+### 피라미딩 (승자에 더 태우기)
+<!-- 추세가 입증된 후 단계적 추가 진입 조건 -->
+- **트리거**: {pyramiding_trigger}
+  <!-- 예: "신고가 돌파 + 거래대금 증가 시 추가 X% 진입" -->
+
+## 카탈리스트 캘린더
+
+<!-- 임박한 촉매(실적/이벤트/규제 결정 등)와 예상 날짜 -->
+{catalyst_calendar}
 
 ## 포지션 사이징
 
@@ -83,7 +109,7 @@ MEMO_TEMPLATE = """# 투자 메모: {ticker} ({company_name})
 """
 
 
-def write_memo(ticker: str, data: dict) -> dict:
+def write_memo(ticker: str, data: dict, overwrite: bool = True) -> dict:
     """
     투자 메모를 작성하여 파일로 저장한다.
 
@@ -91,8 +117,16 @@ def write_memo(ticker: str, data: dict) -> dict:
         ticker: 종목 티커
         data: 메모 데이터 (dict). 키:
             - company_name, analyst, conviction, thesis,
-            - financial_summary, technical_summary, risk_factors,
-            - decision, target_price, stop_loss, follow_up
+            - financial_summary, valuation_summary, technical_summary,
+            - risk_factors, narrative_momentum,
+            - decision(또는 decision_holder/decision_new),
+            - target_price, stop_loss, trailing_stop_rule,
+            - payoff_ratio, pyramiding_trigger, catalyst_calendar,
+            - position_sizing, scenario_analysis, follow_up
+            - version (선택): 지정 시 파일명에 suffix로 붙여 별도 파일 저장
+        overwrite: True(기본)면 같은 날 같은 티커 메모를 덮어쓴다(기존 동작).
+            False면 파일이 이미 있을 때 시각(HHMM) suffix를 붙여 새 파일로
+            저장하여 장중 갱신/피라미딩 추가 메모 유실을 방지한다.
 
     Returns:
         dict: 저장된 파일 경로 및 메타데이터
@@ -115,23 +149,45 @@ def write_memo(ticker: str, data: dict) -> dict:
         valuation_summary=data.get("valuation_summary", "N/A"),
         technical_summary=data.get("technical_summary", "N/A"),
         risk_factors=data.get("risk_factors", "N/A"),
+        narrative_momentum=data.get("narrative_momentum", "N/A"),
         decision_holder=decision_holder,
         decision_new=decision_new,
         target_price=data.get("target_price", "N/A"),
         stop_loss=data.get("stop_loss", "N/A"),
+        trailing_stop_rule=data.get("trailing_stop_rule", "N/A"),
+        payoff_ratio=data.get("payoff_ratio", "N/A"),
+        pyramiding_trigger=data.get("pyramiding_trigger", "N/A"),
+        catalyst_calendar=data.get("catalyst_calendar", "N/A"),
         position_sizing=data.get("position_sizing", "N/A"),
         scenario_analysis=data.get("scenario_analysis", "N/A"),
         follow_up=data.get("follow_up", "N/A"),
     )
 
-    filepath = _memo_path(ticker, date)
+    # 파일명 결정:
+    # 1) data에 version이 명시되면 항상 suffix로 별도 파일.
+    # 2) overwrite=False이고 기본 파일이 이미 있으면 시각(HHMM) suffix.
+    # 3) 그 외(기본): 기존 동작 그대로 같은 날 파일 덮어쓰기.
+    suffix = ""
+    version = data.get("version")
+    if version not in (None, "", "N/A"):
+        suffix = f"_{str(version).strip()}"
+    elif not overwrite and os.path.exists(_memo_path(ticker, date)):
+        suffix = f"_{datetime.now().strftime('%H%M')}"
+
+    if suffix:
+        filename = f"{date}_{ticker.upper()}{suffix}.md"
+        filepath = os.path.join(MEMOS_DIR, filename)
+    else:
+        filename = _memo_filename(ticker, date)
+        filepath = _memo_path(ticker, date)
+
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
 
     return {
         "status": "success",
         "file_path": filepath,
-        "filename": _memo_filename(ticker, date),
+        "filename": filename,
         "ticker": ticker.upper(),
         "date": date,
     }
