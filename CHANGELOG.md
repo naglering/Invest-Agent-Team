@@ -1,5 +1,16 @@
 # 변경사항 (CHANGELOG)
 
+## 2026-06-17 — 히스토리 디렉토리 구조 (요약 + 종합보고서 쌍)
+
+투자 메모 저장을 flat 파일에서 **디렉토리 단위**로 전환. `/invest:stock`의 위원회 최종 **종합보고서**가 요약과 함께 저장되도록 했다.
+
+- **저장 구조**: `data/histories/YYYY-MM-DD_TICKER/` 에 `summary.md`(요약, memo-writer) + `report.md`(종합보고서, Committee Chair) 쌍.
+- **`src/tools/memo_manager.py`** 전면 개편: `write_memo`(→summary.md), `write_report`(→report.md), `read_memo(which=summary|report|both)`, `list/search`는 디렉토리+레거시 동시 인식, `migrate_legacy`(flat→디렉토리).
+- **CLI 추가**: `memo report <TICKER>`(stdin→report.md), `memo migrate [--apply]`, `memo read`에 `summary|report|both` 인자.
+- **`/invest:stock` Step 4**: Chair가 종합보고서 전문을 `memo report`로 저장하도록 명시.
+- **`data/histories/EXAMPLE/`**: `summary.md` + `report.md` 예시 쌍으로 전환(기존 flat `EXAMPLE.md` 대체). `.gitignore`도 디렉토리 추적으로 갱신.
+- 하위호환: 레거시 flat `.md` 메모는 조회/검색에서 계속 인식. 이전은 `memo migrate --apply`.
+
 ## 2026-06-17 — 포트폴리오 관리 명령 + 슬래시 커맨드
 
 세팅·포트폴리오 관리를 슬래시 커맨드와 CLI 서브커맨드로 노출했다.

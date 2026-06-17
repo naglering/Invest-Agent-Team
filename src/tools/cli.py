@@ -14,9 +14,11 @@
     python src/tools/cli.py momentum <TICKER>           (상대강도·신고가 돌파·거래량)
     python src/tools/cli.py sectors                     (테마·섹터 자금흐름 랭킹 — 발굴)
     python src/tools/cli.py memo list
-    python src/tools/cli.py memo read <TICKER>
+    python src/tools/cli.py memo read <TICKER> [summary|report|both]
     python src/tools/cli.py memo search "<QUERY>"
-    python src/tools/cli.py memo write <TICKER>  (stdin으로 JSON 입력)
+    python src/tools/cli.py memo write <TICKER>   (stdin JSON → summary.md)
+    python src/tools/cli.py memo report <TICKER>  (stdin 마크다운 → report.md 종합보고서)
+    python src/tools/cli.py memo migrate [--apply] (레거시 flat → 디렉토리 구조 이전)
     python src/tools/cli.py portfolio                  (data/portfolio.md 평가 — 테이블)
     python src/tools/cli.py portfolio --json           (JSON 출력)
     python src/tools/cli.py portfolio --file <PATH>    (다른 포트폴리오 파일)
@@ -176,14 +178,16 @@ def cmd_portfolio(args: list):
 
 
 def cmd_memo(subcommand: str, args: list) -> dict:
-    from tools.memo_manager import list_memos, read_memo, search_memos, write_memo
+    from tools.memo_manager import (list_memos, migrate_legacy, read_memo,
+                                    search_memos, write_memo, write_report)
 
     if subcommand == "list":
         return list_memos()
     elif subcommand == "read":
         if not args:
-            return {"error": "사용법: memo read <TICKER>"}
-        return read_memo(args[0])
+            return {"error": "사용법: memo read <TICKER> [summary|report|both]"}
+        which = args[1] if len(args) > 1 else "summary"
+        return read_memo(args[0], which=which)
     elif subcommand == "search":
         if not args:
             return {"error": "사용법: memo search <QUERY>"}
@@ -193,6 +197,13 @@ def cmd_memo(subcommand: str, args: list) -> dict:
             return {"error": "사용법: memo write <TICKER> (stdin으로 JSON 입력)"}
         data = json.load(sys.stdin)
         return write_memo(args[0], data)
+    elif subcommand == "report":
+        if not args:
+            return {"error": "사용법: memo report <TICKER> (stdin으로 종합보고서 마크다운 입력)"}
+        content = sys.stdin.read()
+        return write_report(args[0], content)
+    elif subcommand == "migrate":
+        return migrate_legacy(apply="--apply" in args)
     else:
         return {"error": f"알 수 없는 memo 서브커맨드: {subcommand}"}
 

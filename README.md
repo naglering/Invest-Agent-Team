@@ -181,11 +181,12 @@ python3 src/tools/cli.py setup                   # data/mandates/*.json 정본 �
 # 웹 검색
 python3 src/tools/cli.py news-search "<QUERY>"   # 뉴스 키워드 검색
 
-# 메모 관리
+# 메모 관리 (data/histories/YYYY-MM-DD_TICKER/ : summary.md 요약 + report.md 종합보고서)
 python3 src/tools/cli.py memo list               # 메모 목록
-python3 src/tools/cli.py memo read <TICKER>      # 메모 조회
-python3 src/tools/cli.py memo search "<QUERY>"   # 메모 검색
-python3 src/tools/cli.py memo write <TICKER>     # 메모 작성 (stdin JSON)
+python3 src/tools/cli.py memo read <TICKER> [summary|report|both]  # 메모 조회
+python3 src/tools/cli.py memo search "<QUERY>"   # 메모 검색 (요약+보고서 전체)
+python3 src/tools/cli.py memo write <TICKER>     # 요약 작성 (stdin JSON → summary.md)
+python3 src/tools/cli.py memo report <TICKER>    # 종합보고서 저장 (stdin → report.md)
 
 # 빠른 통합 분석 (레거시)
 python3 src/main.py <TICKER>
@@ -295,7 +296,7 @@ invest-principal/
 │   ├── agents/                  # 에이전트 프롬프트 정의 (8명)
 │   └── commands/invest/         # 슬래시 커맨드 정의 (stock, market)
 ├── data/                        # 골격만 추적 — 개인 데이터는 .gitignore
-│   ├── histories/               # 투자 메모 (EXAMPLE.md만 추적, 실제 메모는 ignore)
+│   ├── histories/               # 투자 메모 — YYYY-MM-DD_TICKER/{summary.md,report.md} (EXAMPLE/만 추적)
 │   ├── mandates/                # 투자 mandate 설정 (default, megatrend)
 │   ├── portfolio.md             # 보유 종목 테이블 (ignore, `portfolio init`로 생성)
 │   ├── theses.md                # 보유 Thesis (ignore)

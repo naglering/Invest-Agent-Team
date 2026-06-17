@@ -35,11 +35,13 @@ python3 src/tools/cli.py sectors                  # 테마·섹터 자금흐름 
 # 웹 검색
 python3 src/tools/cli.py news-search "<QUERY>"   # 뉴스 키워드 검색 (yfinance)
 
-# 메모 관리
+# 메모 관리 (data/histories/YYYY-MM-DD_TICKER/ 디렉토리: summary.md + report.md 쌍)
 python3 src/tools/cli.py memo list               # 메모 목록
-python3 src/tools/cli.py memo read <TICKER>      # 메모 조회
-python3 src/tools/cli.py memo search "<QUERY>"   # 메모 검색
-python3 src/tools/cli.py memo write <TICKER>     # 메모 작성 (stdin으로 JSON 입력)
+python3 src/tools/cli.py memo read <TICKER> [summary|report|both]  # 메모 조회 (기본 summary)
+python3 src/tools/cli.py memo search "<QUERY>"   # 메모 검색 (요약+종합보고서 전체)
+python3 src/tools/cli.py memo write <TICKER>     # 요약 작성 (stdin JSON → summary.md)
+python3 src/tools/cli.py memo report <TICKER>    # 종합보고서 저장 (stdin 마크다운 → report.md)
+python3 src/tools/cli.py memo migrate [--apply]  # 레거시 flat 파일 → 디렉토리 구조 이전
 
 # 포트폴리오 관리 (data/portfolio.md 보유 종목 평가)
 python3 src/tools/cli.py portfolio                # 현재가·환율 조회 → 평가/손익/비중 테이블
@@ -70,7 +72,7 @@ python3 src/main.py <TICKER>
 > `.gitignore` 처리되어 추적되지 않는다. 레포에는 구조 + `data/mandates` + `data/histories/EXAMPLE.md`만 포함.
 > 클론 직후 `cli.py setup` + `cli.py portfolio init`으로 개인 데이터 파일을 생성한 뒤 직접 편집한다.
 
-- `data/histories/` — 투자 메모 저장소. 파일명: `YYYY-MM-DD_TICKER.md` (실제 메모는 ignore, `EXAMPLE.md`만 추적)
+- `data/histories/` — 투자 메모 저장소. **디렉토리 단위**: `YYYY-MM-DD_TICKER/`에 `summary.md`(요약) + `report.md`(위원회 종합보고서) 쌍. (실제 메모는 ignore, `EXAMPLE/`만 추적. 레거시 flat `.md`는 `memo migrate`로 이전)
 - `data/portfolio.md` · `data/theses.md` · `data/positions.md` — 개인 데이터 (ignore, `portfolio init`로 생성)
 - `data/mandates/` — 투자 mandate 설정 파일 (추적)
   - `data/mandates/default.json` — **보수 프로파일** (PER ≤ 50 게이트, 최대 비중 10%, moderate)
@@ -85,7 +87,9 @@ python3 src/main.py <TICKER>
 
 ## 메모 포맷 규격
 
-투자 메모는 다음 섹션을 포함해야 한다:
+> 메모는 `data/histories/YYYY-MM-DD_TICKER/` 디렉토리에 **요약(`summary.md`) + 종합보고서(`report.md`)** 쌍으로 저장된다. 아래 규격은 **요약(summary)** 기준이며, `report.md`는 위원회 최종 종합보고서 전문이다.
+
+투자 메모(요약)는 다음 섹션을 포함해야 한다:
 
 1. **헤더**: 티커, 회사명, 작성일, 분석가
 2. **투자 논거 (Thesis)**: 핵심 투자 이유
