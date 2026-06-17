@@ -97,6 +97,187 @@ def load_holdings(path: str = None) -> list:
     return holdings
 
 
+# 파일이 없을 때 새로 만들 포트폴리오 골격 (예시 행 없음 — 깨끗한 시작)
+_PORTFOLIO_SCAFFOLD = """# 내 포트폴리오 (보유 종목)
+
+`python3 src/tools/cli.py portfolio` 로 현재가·환율을 조회해 평가/손익/비중을 계산합니다.
+행 추가/삭제는 `portfolio add` / `portfolio remove` 또는 직접 편집.
+
+| 종목 | 수량 | 매입가 | 통화 | 매입시환율 |
+|------|------|--------|------|-----------|
+"""
+
+
+def _suggest_currency(ticker: str, listed_ccy: str = None) -> str:
+    """티커로 통화 추정. 한국(.KS/.KQ)=KRW, 그 외는 상장통화 또는 USD."""
+    t = ticker.upper()
+    if t.endswith(".KS") or t.endswith(".KQ"):
+        return "KRW"
+    return (listed_ccy or "USD").upper()
+
+
+def _num(v) -> str:
+    """숫자를 표 셀 문자열로. 정수면 정수, 아니면 불필요한 0 제거."""
+    f = float(v)
+    if f == int(f):
+        return str(int(f))
+    return f"{f:.6f}".rstrip("0").rstrip(".")
+
+
+def quote(ticker: str) -> dict:
+    """매수 입력을 돕기 위한 간단 종목 정보(이름·현재가·통화·섹터·52주 범위·시총)."""
+    ticker = ticker.strip()
+    tk = yf.Ticker(ticker)
+    info = {}
+    try:
+        info = tk.get_info() or {}
+    except Exception:
+        pass
+    price, listed_ccy = _fetch_price(ticker)
+    ccy = info.get("currency") or listed_ccy
+    return {
+        "ticker": ticker,
+        "name": info.get("longName") or info.get("shortName") or ticker,
+        "current_price": round(price, 2) if price else None,
+        "currency": ccy.upper() if ccy else None,
+        "suggested_currency": _suggest_currency(ticker, ccy),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "market_cap": info.get("marketCap"),
+        "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
+        "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+        "quote_type": info.get("quoteType"),
+        "hint": "수량 | 매입가 | 통화(USD/KRW) | 매입시환율(USD만, 매입 시점 원/달러)을 입력하세요.",
+    }
+
+
+def _read_first_table(path: str):
+    """portfolio.md 의 첫 마크다운 테이블 위치를 찾는다.
+    반환: (lines, start, end) — start=헤더행 인덱스, end=테이블 다음 인덱스(exclusive)."""
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("|"):
+            start = i
+            break
+    if start is None:
+        raise ValueError("보유 종목 테이블을 찾지 못했습니다.")
+    end = start
+    while end < len(lines) and lines[end].lstrip().startswith("|"):
+        end += 1
+    return lines, start, end
+
+
+def _split_row(row: str):
+    return [c.strip() for c in row.strip().strip("|").split("|")]
+
+
+def _render_row(headers_raw, rec: dict) -> str:
+    """헤더 컬럼 순서에 맞춰 한 행을 렌더링."""
+    cells = []
+    for h in headers_raw:
+        key = _HEADER_MAP.get(h.strip(), h.strip())
+        if key == "ticker":
+            cells.append(str(rec["ticker"]))
+        elif key == "quantity":
+            cells.append(_num(rec["quantity"]))
+        elif key == "buy_price":
+            cells.append(_num(rec["buy_price"]))
+        elif key == "currency":
+            cells.append(rec["currency"])
+        elif key == "buy_fx":
+            fx = rec.get("buy_fx")
+            cells.append(_num(fx) if fx not in (None, "", "-") else "-")
+        else:
+            cells.append("")
+    return "| " + " | ".join(cells) + " |\n"
+
+
+def _load_records(path: str):
+    """현재 테이블의 행들을 (lines, start, end, headers_raw, records) 로 로드."""
+    lines, start, end = _read_first_table(path)
+    headers_raw = _split_row(lines[start])
+    headers = [_HEADER_MAP.get(h, h) for h in headers_raw]
+    records = []
+    for row in lines[start + 2:end]:  # start+1 = 구분선
+        cells = _split_row(row)
+        if not any(cells):
+            continue
+        rec = dict(zip(headers, cells))
+        if (rec.get("ticker") or "").strip():
+            records.append(rec)
+    return lines, start, end, headers_raw, records
+
+
+def _write_table(path: str, lines, start, end, headers_raw, records):
+    """헤더+구분선은 보존하고 데이터 행만 재작성하여 파일 저장."""
+    new_rows = [_render_row(headers_raw, _std_rec(r)) for r in records]
+    new_lines = lines[:start + 2] + new_rows + lines[end:]
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+
+def _std_rec(r: dict) -> dict:
+    """원시 행 dict → 렌더용 표준 dict."""
+    return {
+        "ticker": (r.get("ticker") or "").strip(),
+        "quantity": _to_float(r.get("quantity")) or 0,
+        "buy_price": _to_float(r.get("buy_price")) or 0,
+        "currency": _norm_currency(r.get("currency")),
+        "buy_fx": r.get("buy_fx"),
+    }
+
+
+def add_holding(ticker, quantity, buy_price, currency=None, buy_fx=None, path=None) -> dict:
+    """보유 종목 추가/수정(매수). 같은 티커가 있으면 덮어쓴다. 파일 없으면 생성."""
+    path = path or _DEFAULT_PATH
+    ticker = str(ticker).strip()
+    currency = _norm_currency(currency) if currency else _suggest_currency(ticker)
+    warnings = []
+    if currency == "USD" and buy_fx in (None, "", "-"):
+        warnings.append("USD 종목인데 매입시환율 누락 → 원화 손익 계산이 부정확합니다.")
+
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_PORTFOLIO_SCAFFOLD)
+
+    lines, start, end, headers_raw, records = _load_records(path)
+    new_rec = {
+        "ticker": ticker, "quantity": quantity, "buy_price": buy_price,
+        "currency": currency, "buy_fx": buy_fx,
+    }
+    action = "added"
+    for i, r in enumerate(records):
+        if (r.get("ticker") or "").strip().upper() == ticker.upper():
+            records[i] = new_rec
+            action = "updated"
+            break
+    else:
+        records.append(new_rec)
+    _write_table(path, lines, start, end, headers_raw, records)
+    return {"action": action, "ticker": ticker, "quantity": _num(quantity),
+            "buy_price": _num(buy_price), "currency": currency,
+            "buy_fx": (_num(buy_fx) if buy_fx not in (None, "", "-") else "-"),
+            "count": len(records), "warnings": warnings}
+
+
+def remove_holding(ticker, path=None) -> dict:
+    """보유 종목 삭제(매도). 티커 일치 행을 제거."""
+    path = path or _DEFAULT_PATH
+    ticker = str(ticker).strip()
+    if not os.path.exists(path):
+        return {"error": f"포트폴리오 파일 없음: {path}"}
+    lines, start, end, headers_raw, records = _load_records(path)
+    kept = [r for r in records if (r.get("ticker") or "").strip().upper() != ticker.upper()]
+    removed = len(records) - len(kept)
+    if removed == 0:
+        return {"action": "not_found", "ticker": ticker,
+                "message": f"{ticker} 보유 종목에 없음", "count": len(records)}
+    _write_table(path, lines, start, end, headers_raw, kept)
+    return {"action": "removed", "ticker": ticker, "removed": removed, "count": len(kept)}
+
+
 def _fetch_price(ticker: str):
     """현재가와 상장통화 반환. 실패 시 (None, None)."""
     try:

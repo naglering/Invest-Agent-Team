@@ -22,6 +22,9 @@
     python src/tools/cli.py portfolio --file <PATH>    (다른 포트폴리오 파일)
     python src/tools/cli.py portfolio --fx <RATE>      (원/달러 환율 수동 지정)
     python src/tools/cli.py portfolio init [--force]   (portfolio/theses/positions 템플릿 생성)
+    python src/tools/cli.py portfolio quote <TICKER>   (매수 입력용 간단 종목정보)
+    python src/tools/cli.py portfolio add <TICKER> --qty N --price P [--ccy USD|KRW] [--fx 1380]  (매수)
+    python src/tools/cli.py portfolio remove <TICKER>  (매도 — 보유 종목 제거)
     python src/tools/cli.py setup [--force]            (data/mandates/*.json 정본 생성)
 """
 
@@ -118,12 +121,41 @@ def cmd_setup(args: list) -> dict:
 def cmd_portfolio(args: list):
     """포트폴리오 평가. 기본은 텍스트 테이블 출력, --json 시 dict 반환.
 
-    `portfolio init` 서브커맨드는 개인 데이터 템플릿을 생성한다.
-    반환값: dict(--json/init 모드) 또는 None(테이블을 직접 출력한 경우).
+    서브커맨드: init(템플릿 생성) / quote(종목정보) / add(매수) / remove(매도).
+    서브커맨드 없으면 보유 종목 평가.
+    반환값: dict(서브커맨드/--json) 또는 None(테이블을 직접 출력한 경우).
     """
-    if args and args[0] == "init":
+    sub = args[0] if args else None
+
+    if sub == "init":
         from tools.setup_tool import setup_portfolio
         return setup_portfolio(force="--force" in args)
+
+    if sub == "quote":
+        from tools.portfolio import quote
+        if len(args) < 2:
+            return {"error": "사용법: portfolio quote <TICKER>"}
+        return quote(args[1])
+
+    if sub == "add":
+        from tools.portfolio import add_holding
+        if len(args) < 2:
+            return {"error": "사용법: portfolio add <TICKER> --qty N --price P [--ccy USD|KRW] [--fx 1380]"}
+        qty = _parse_opt(args, "--qty")
+        price = _parse_opt(args, "--price")
+        if qty is None or price is None:
+            return {"error": "필수 옵션 누락: --qty, --price"}
+        return add_holding(
+            args[1], float(qty), float(price),
+            currency=_parse_opt(args, "--ccy"),
+            buy_fx=_parse_opt(args, "--fx"),
+        )
+
+    if sub == "remove":
+        from tools.portfolio import remove_holding
+        if len(args) < 2:
+            return {"error": "사용법: portfolio remove <TICKER>"}
+        return remove_holding(args[1])
 
     from tools.portfolio import analyze_portfolio, render_table
 

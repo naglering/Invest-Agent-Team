@@ -45,6 +45,10 @@ python3 src/tools/cli.py memo write <TICKER>     # 메모 작성 (stdin으로 JS
 python3 src/tools/cli.py portfolio                # 현재가·환율 조회 → 평가/손익/비중 테이블
 python3 src/tools/cli.py portfolio --json         # JSON 출력
 python3 src/tools/cli.py portfolio --fx 1380      # 원/달러 환율 수동 지정
+python3 src/tools/cli.py portfolio quote <TICKER> # 매수 입력용 간단 종목정보 (이름·현재가·통화·섹터·52주·시총)
+python3 src/tools/cli.py portfolio add <TICKER> --qty N --price P [--ccy USD|KRW] [--fx 1490]  # 매수(추가/평단 갱신)
+python3 src/tools/cli.py portfolio remove <TICKER># 매도(보유 종목 제거)
+#   → 포트폴리오 구성·매수·매도는 슬래시 커맨드 /invest:portfolio 로도 가능
 
 # 초기 세팅 (개인 데이터는 .gitignore — 클론 직후 1회 생성 후 직접 편집)
 python3 src/tools/cli.py setup                    # data/mandates/{default,megatrend}.json 정본 생성
