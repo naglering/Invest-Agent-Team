@@ -21,3 +21,15 @@ Thumbs.db
 
 # Claude Code
 .claude/settings.local.json
+
+# 개인 투자 데이터 — GitHub엔 골격(skeleton)/예시만 올린다.
+# 아래 파일들은 `cli.py setup` / `cli.py portfolio init` 로 생성 후 직접 편집한다.
+data/histories/*
+!data/histories/EXAMPLE.md
+data/portfolio.md
+data/positions.md
+data/theses.md
+
+# 기타 로컬 산출물
+budget_*.pdf
+*:Zone.Identifier

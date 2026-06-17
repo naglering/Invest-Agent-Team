@@ -1,5 +1,15 @@
 # 변경사항 (CHANGELOG)
 
+## 2026-06-17 — 개인 데이터 분리 (골격만 공개)
+
+GitHub에는 **골격(skeleton)만** 올리도록 데이터 정책을 정리했다. 개인 투자 데이터(보유 종목·Thesis·포지션·실제 투자 메모)는 `.gitignore` 처리하고, 클론 직후 명령으로 생성·편집하도록 했다.
+
+- **`.gitignore`** — `data/histories/*`(단 `EXAMPLE.md` 추적), `data/portfolio.md`, `data/theses.md`, `data/positions.md` 무시. `budget_*.pdf`, `*:Zone.Identifier` 로컬 산출물도 무시.
+- **신규** `src/tools/setup_tool.py` — mandate 정본 + 개인 데이터 템플릿.
+- **CLI 추가** `setup`(`data/mandates/{default,megatrend}.json` 생성), `portfolio init`(`portfolio.md`/`theses.md`/`positions.md` 템플릿 생성). 둘 다 기존 파일은 보존(`--force`로만 덮어씀).
+- **신규** `data/histories/EXAMPLE.md` — 메모 포맷 가이드(추적 대상).
+- 이미 푸시됐던 개인 데이터는 `git filter-repo`로 전체 히스토리에서 제거(force-push).
+
 ## 2026-06-17 — 투자 분석 스위트 공격형 전면 개편
 
 보수적 가치투자 프레임을 **"규율 있는 과감한 메가트렌드 베팅"** 자세로 전환. 자금이 몰리는 메가트렌드·강한 서사 종목에 대해 손절 규율을 전제로 한 집중·모멘텀·피라미딩 의사결정이 가능하도록 코드·프롬프트·mandate를 전면 개편했다.

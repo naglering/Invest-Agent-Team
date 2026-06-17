@@ -21,6 +21,8 @@
     python src/tools/cli.py portfolio --json           (JSON 출력)
     python src/tools/cli.py portfolio --file <PATH>    (다른 포트폴리오 파일)
     python src/tools/cli.py portfolio --fx <RATE>      (원/달러 환율 수동 지정)
+    python src/tools/cli.py portfolio init [--force]   (portfolio/theses/positions 템플릿 생성)
+    python src/tools/cli.py setup [--force]            (data/mandates/*.json 정본 생성)
 """
 
 import sys
@@ -107,11 +109,22 @@ def cmd_insider(ticker: str) -> dict:
     return analyze_insider(ticker)
 
 
+def cmd_setup(args: list) -> dict:
+    """data/mandates/{default,megatrend}.json 정본 생성."""
+    from tools.setup_tool import setup_mandates
+    return setup_mandates(force="--force" in args)
+
+
 def cmd_portfolio(args: list):
     """포트폴리오 평가. 기본은 텍스트 테이블 출력, --json 시 dict 반환.
 
-    반환값: dict(--json 모드) 또는 None(테이블을 직접 출력한 경우).
+    `portfolio init` 서브커맨드는 개인 데이터 템플릿을 생성한다.
+    반환값: dict(--json/init 모드) 또는 None(테이블을 직접 출력한 경우).
     """
+    if args and args[0] == "init":
+        from tools.setup_tool import setup_portfolio
+        return setup_portfolio(force="--force" in args)
+
     from tools.portfolio import analyze_portfolio, render_table
 
     as_json = "--json" in args
@@ -240,6 +253,9 @@ def main():
 
         elif command == "portfolio":
             result = cmd_portfolio(args)  # 테이블 직접 출력 시 None 반환
+
+        elif command == "setup":
+            result = cmd_setup(args)
 
         else:
             result = {"error": f"알 수 없는 명령: {command}"}

@@ -46,6 +46,11 @@ python3 src/tools/cli.py portfolio                # 현재가·환율 조회 →
 python3 src/tools/cli.py portfolio --json         # JSON 출력
 python3 src/tools/cli.py portfolio --fx 1380      # 원/달러 환율 수동 지정
 
+# 초기 세팅 (개인 데이터는 .gitignore — 클론 직후 1회 생성 후 직접 편집)
+python3 src/tools/cli.py setup                    # data/mandates/{default,megatrend}.json 정본 생성
+python3 src/tools/cli.py portfolio init           # portfolio.md / theses.md / positions.md 템플릿 생성
+#   옵션: --force    # 기존 파일 덮어쓰기 (기본은 존재 시 건너뜀)
+
 # 빠른 통합 분석 (기존 코드)
 python3 src/main.py <TICKER>
 ```
@@ -57,8 +62,13 @@ python3 src/main.py <TICKER>
 
 ## 데이터 디렉토리 규약
 
-- `data/histories/` — 투자 메모 저장소. 파일명: `YYYY-MM-DD_TICKER.md`
-- `data/mandates/` — 투자 mandate 설정 파일
+> **GitHub엔 골격(skeleton)만.** 개인 투자 데이터(보유 종목·Thesis·포지션·실제 투자 메모)는
+> `.gitignore` 처리되어 추적되지 않는다. 레포에는 구조 + `data/mandates` + `data/histories/EXAMPLE.md`만 포함.
+> 클론 직후 `cli.py setup` + `cli.py portfolio init`으로 개인 데이터 파일을 생성한 뒤 직접 편집한다.
+
+- `data/histories/` — 투자 메모 저장소. 파일명: `YYYY-MM-DD_TICKER.md` (실제 메모는 ignore, `EXAMPLE.md`만 추적)
+- `data/portfolio.md` · `data/theses.md` · `data/positions.md` — 개인 데이터 (ignore, `portfolio init`로 생성)
+- `data/mandates/` — 투자 mandate 설정 파일 (추적)
   - `data/mandates/default.json` — **보수 프로파일** (PER ≤ 50 게이트, 최대 비중 10%, moderate)
   - `data/mandates/megatrend.json` — **공격 프로파일** (PER 게이트 비활성, 최대 비중 25%, aggressive, D/E 5.0)
 
