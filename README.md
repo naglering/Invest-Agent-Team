@@ -72,8 +72,8 @@ flowchart TB
 ## 설치
 
 ```bash
-git clone https://github.com/naglering/invest-analyzer.git
-cd invest-analyzer
+git clone https://github.com/naglering/Invest-Agent-Team.git
+cd Invest-Agent-Team
 pip install -r requirements.txt
 ```
 
