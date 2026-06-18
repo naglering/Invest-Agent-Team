@@ -187,9 +187,11 @@ def analyze_risk(
     # 섹터 ETF 추가 (info는 1회만 조회해 재사용)
     ticker_info = {}
     sector = ""
+    quote_type = ""
     try:
         ticker_info = ticker.info or {}
         sector = ticker_info.get("sector", "")
+        quote_type = (ticker_info.get("quoteType") or "").upper()
         sector_etf = SECTOR_ETF_MAP.get(sector)
         if sector_etf:
             benchmark_tickers[sector_etf] = f"섹터 ETF ({sector})"
@@ -197,10 +199,12 @@ def analyze_risk(
         pass
 
     company_name = ticker_info.get("longName") or ticker_info.get("shortName") or ""
+    is_crypto = quote_type == "CRYPTOCURRENCY"
 
-    # mandate 프로파일 결정: 명시값 우선, 없으면 티커→테마 자동 매핑
+    # mandate 프로파일 결정: 명시값 우선 → 크립토면 crypto → 그 외 티커→테마 자동 매핑
     if mandate_profile is None:
-        mandate_profile = mandate_profile_for_ticker(ticker_symbol, sector, company_name)
+        mandate_profile = ("crypto" if is_crypto
+                           else mandate_profile_for_ticker(ticker_symbol, sector, company_name))
 
     for bench_ticker, bench_name in benchmark_tickers.items():
         try:
@@ -417,9 +421,11 @@ def check_mandate(ticker_symbol: str, mandate_profile: str = None) -> dict:
     company_name = info.get("longName") or info.get("shortName") or ""
     quote_type = (info.get("quoteType") or "").upper()
     is_fund = quote_type in ("ETF", "MUTUALFUND")
+    is_crypto = quote_type == "CRYPTOCURRENCY"
 
     if mandate_profile is None:
-        mandate_profile = mandate_profile_for_ticker(ticker_symbol, sector, company_name)
+        mandate_profile = ("crypto" if is_crypto
+                           else mandate_profile_for_ticker(ticker_symbol, sector, company_name))
 
     mandate = _load_mandate(mandate_profile)
     if not mandate:
@@ -461,11 +467,17 @@ def check_mandate(ticker_symbol: str, mandate_profile: str = None) -> dict:
         if peg: ref.append(f"PEG {peg:.2f}")
         checks.append({
             "rule": "밸류에이션(참고)",
-            "threshold": "PER 게이트 비활성 — 성장조정(P/S·매출성장·룰40)로 판단",
-            "actual": ", ".join(ref) if ref else "N/A",
+            "threshold": ("주식 멀티플 N/A(크립토) — 온체인 네트워크 가치(NVT·MVRV·P/F)로 판단"
+                          if is_crypto
+                          else "PER 게이트 비활성 — 성장조정(P/S·매출성장·룰40)로 판단"),
+            "actual": ("N/A (디지털자산 — 매출/이익 없음)" if is_crypto
+                       else (", ".join(ref) if ref else "N/A")),
             "passed": True,
         })
-        notes.append("고성장 프로파일: PER 하드캡 미적용. 고PER 자체를 위반으로 보지 않음 — 서사·성장이 멀티플을 정당화하는지 valuation/financial 에이전트가 판단.")
+        if is_crypto:
+            notes.append("디지털자산: PER/P-S 등 주식 멀티플 미적용. 밸류에이션은 토크노믹스(발행·언락 희석)와 온체인 네트워크 가치(NVT·MVRV·스톡투플로우·P/F 수수료배수)로 crypto-analyst가 판단 — `cli.py crypto <TICKER>` 참조.")
+        else:
+            notes.append("고성장 프로파일: PER 하드캡 미적용. 고PER 자체를 위반으로 보지 않음 — 서사·성장이 멀티플을 정당화하는지 valuation/financial 에이전트가 판단.")
     elif is_fund:
         # ETF/펀드: 개별주 PER 게이트 부적합 (PER은 의미 없음). 게이트 면제.
         checks.append({

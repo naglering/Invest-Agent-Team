@@ -53,6 +53,26 @@ MANDATE_MEGATREND = {
     ),
 }
 
+MANDATE_CRYPTO = {
+    "name": "크립토 공격 mandate",
+    "max_position_pct": 20,
+    "min_market_cap_usd": 1000000000,
+    "allowed_sectors": [],
+    "excluded_sectors": [],
+    "max_pe_ratio": None,
+    "min_dividend_yield": 0,
+    "max_debt_to_equity": None,
+    "risk_tolerance": "aggressive",
+    "description": (
+        "디지털자산(BTC·ETH·주요 알트) 집중·모멘텀 베팅 mandate. PER/부채비율/배당 "
+        "게이트는 주식 지표라 N/A — 대신 토크노믹스(발행·언락 희석, FDV/MC), 온체인 "
+        "네트워크 가치(NVT·MVRV·P/F·실질 스테이킹 수익률), 홀더/거래소 집중도, 규제 "
+        "리스크로 판단한다. 극단적 변동성(80%+ 낙폭 전례)을 손절 규율과 포지션 사이징"
+        "으로 관리하며, 단일 자산 최대 20%·시총 $1B 미만(저유동·러그 위험) 회피. "
+        "리스크는 거부권이 아니라 사이징·손절선 입력이다."
+    ),
+}
+
 
 # ── 개인 데이터 템플릿 (skeleton) ─────────────────────────────────────────
 
@@ -144,12 +164,14 @@ def _write(path: str, content: str, force: bool) -> str:
 
 
 def setup_mandates(force: bool = False) -> dict:
-    """data/mandates/{default,megatrend}.json 정본 생성."""
+    """data/mandates/{default,megatrend,crypto}.json 정본 생성."""
     results = [
         _write(_data_path("mandates", "default.json"),
                json.dumps(MANDATE_DEFAULT, ensure_ascii=False, indent=2) + "\n", force),
         _write(_data_path("mandates", "megatrend.json"),
                json.dumps(MANDATE_MEGATREND, ensure_ascii=False, indent=2) + "\n", force),
+        _write(_data_path("mandates", "crypto.json"),
+               json.dumps(MANDATE_CRYPTO, ensure_ascii=False, indent=2) + "\n", force),
     ]
     return {"action": "setup-mandates", "force": force, "results": results,
             "hint": "프로파일 값을 본인 전략에 맞게 편집하세요. 기존 파일은 --force로만 덮어씁니다."}

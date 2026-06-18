@@ -6,6 +6,8 @@
 
 분석은 3단 하향식으로 흐른다 — `/invest:macro`(경기·정책 레짐·크로스에셋·자산배분 틸트, 톱다운 시장 날씨) → `/invest:market`(섹터·테마 자금흐름·종목 스캔, 모드 M 시장전반/모드 S 지정섹터) → `/invest:stock`(단일 종목 심층). macro는 종목·섹터 톱픽을 내지 않고 레짐·자산배분 자세까지만 책임지며, 그 이하는 market·stock으로 위임한다.
 
+디지털자산(코인)은 별도 트랙 `/invest:crypto`(BTC·ETH·알트 단일자산 심층 — `/invest:stock`의 크립토 버전)로 분석한다. 주식의 재무제표/DCF/실적 대신 **토크노믹스(발행·언락 희석)·온체인 네트워크 가치(NVT·MVRV·TVL·수수료배수 P/F)·시장구조(도미넌스·섹터 로테이션·스테이블코인 유동성)·카탈리스트(반감기·ETF·업그레이드·언락·규제)**로 평가하며, 전담 에이전트는 `crypto-analyst`(주식의 financial+valuation+earnings를 크립토 문맥에서 대체)다.
+
 ### 투자 철학
 
 보수적 분산 일변도가 아니라, 자금이 몰리는 **메가트렌드·강한 서사 종목**에 대해서는 **손절 규율 기반의 과감한 집중·모멘텀 베팅**을 허용한다. (단, 모든 분석은 참고 자료이며 투자 권유가 아니다 — '주의사항' 면책 유지.)
@@ -33,6 +35,8 @@ python3 src/tools/cli.py peers <TICKER> --peers T1,T2,T3   # 동종업계 비교
 python3 src/tools/cli.py insider <TICKER>         # 내부자 거래/기관보유
 python3 src/tools/cli.py momentum <TICKER>        # 모멘텀 분석 (상대강도 RS, 52주 신고가 돌파, 거래량 급증, momentum_score)
 python3 src/tools/cli.py macro                    # 크로스에셋 레짐 대시보드 (일드커브·DXY·VIX·신용 프록시·금/유가/구리·BTC·연준 net liquidity[FRED] → 성장x인플레 4분면 + risk-on/off 점수). sectors='어느 섹터로 돈이 도는가', macro='시장 전체가 어떤 경기·정책·유동성 레짐인가'
+python3 src/tools/cli.py crypto <TICKER>          # 디지털자산 네이티브 분석 (토크노믹스·온체인·아키타입별 평가멀티플 P/F·NVT·MVRV·S2F). CoinGecko+DefiLlama+Blockchain.com — 전부 키리스. 출력의 yfinance_symbol을 technical/risk/momentum에 사용(TON·UNI 등 티커 오인 방지)
+python3 src/tools/cli.py crypto-market            # 크립토 시장구조 (BTC/ETH/alt 도미넌스·ETH/BTC 비율·섹터 로테이션·스테이블코인 발행 dry powder·Fear&Greed). '주식의 sectors'에 해당하는 크립토 발굴 엔진
 python3 src/tools/cli.py sectors                  # 테마·섹터 자금흐름 랭킹 (발굴 엔진)
 python3 src/tools/cli.py themes <TICKER>          # 티커가 속한 메가트렌드 테마 + 적용 mandate
 python3 src/tools/cli.py themes list              # 테마별 멤버십 (ETF holdings ∪ reps − exclude)
@@ -91,12 +95,14 @@ python3 src/main.py <TICKER>
 - `data/mandates/` — 투자 mandate 설정 파일 (추적)
   - `data/mandates/default.json` — **보수 프로파일** (PER ≤ 50 게이트, 최대 비중 10%, moderate)
   - `data/mandates/megatrend.json` — **공격 프로파일** (PER 게이트 비활성, 최대 비중 25%, aggressive, D/E 5.0)
+  - `data/mandates/crypto.json` — **크립토 프로파일** (주식 게이트 N/A, 최대 비중 20%, aggressive, 시총 $1B 하한)
 
-### mandate 프로파일 (2종)
+### mandate 프로파일 (3종)
 
 - **default (보수)**: 밸류에이션 게이트(PER ≤ 50)와 보수적 포지션 한도(최대 10%, moderate)를 적용한다.
 - **megatrend (공격)**: 메가트렌드 테마 종목에 한해 PER 게이트를 비활성화하고, 더 큰 집중(최대 25%, aggressive, D/E 5.0)을 허용한다.
-- **티커 → 테마 자동선택**: 다음 메가트렌드 테마에 속한 티커는 자동으로 `megatrend` 프로파일을 사용한다 — AI·반도체 / SMR·원자력 / 우주 / 양자 / 방산 / DC(데이터센터) 전력 / 비만치료제 / 디지털 인프라. (그 외 종목은 `default`.)
+- **crypto (디지털자산)**: PER/부채/배당 등 주식 게이트는 N/A. 토크노믹스·온체인 네트워크 가치·집중도·규제로 판단하며, 극단적 변동성을 손절 규율·사이징으로 관리(최대 20%, aggressive, 시총 $1B 하한).
+- **티커 → 프로파일 자동선택**: `quoteType=CRYPTOCURRENCY`(BTC·ETH 등)면 자동으로 `crypto`. 그 외, 다음 메가트렌드 테마에 속한 티커는 `megatrend` — AI·반도체 / SMR·원자력 / 우주 / 양자 / 방산 / DC(데이터센터) 전력 / 비만치료제 / 디지털 인프라. (그 외 종목은 `default`.)
 - **테마 멤버십은 동적**: `theme_members = (ETF 실제 top holdings ∪ reps) − exclude`. ETF 큐레이터가 정한 현재 구성을 yfinance로 라이브 반영(디스크 캐시 TTL 7일, 오프라인/실패 시 `reps` 폴백)하여 수기 명단이 낡아 신규 수혜주를 놓치는 문제를 막는다. `reps`=수동 시드(ETF top10 밖 핵심주), `exclude`=holdings로 딸려오나 megatrend 성격이 아닌 종목 차단(예: 방산 성숙 prime). 환경변수 `INVEST_ETF_LIVE=0`이면 정적 `reps`만 사용.
   - ⚠️ 멤버십(리스크 컨테이너=mandate)은 ETF 편입이라는 **슬로우·구조적** 신호로만 판정한다. 뉴스/모멘텀 같은 변동 신호로 mandate를 흔들면 하이프가 집중 한도를 자동 해제하는 반사성 위험 → 그쪽은 확신도·진입 타이밍(`momentum`/`sectors`)에서만 다룬다.
 - CLI의 `--mandate` 옵션으로 자동선택을 수동 오버라이드할 수 있다 (`risk`, `mandate-check`).

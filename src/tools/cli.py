@@ -13,6 +13,8 @@
     python src/tools/cli.py insider <TICKER>
     python src/tools/cli.py momentum <TICKER>           (상대강도·신고가 돌파·거래량)
     python src/tools/cli.py macro                       (크로스에셋 레짐 대시보드 — 일드커브·DXY·VIX·신용·원자재·BTC)
+    python src/tools/cli.py crypto <TICKER>             (디지털자산 토크노믹스·온체인·평가멀티플 — CoinGecko+DefiLlama+Blockchain.com 키리스)
+    python src/tools/cli.py crypto-market               (크립토 시장구조 — 도미넌스·ETH/BTC·섹터 로테이션·스테이블코인·F&G)
     python src/tools/cli.py sectors                     (테마·섹터 자금흐름 랭킹 — 발굴)
     python src/tools/cli.py memo list
     python src/tools/cli.py memo read <TICKER> [summary|report|both]
@@ -123,6 +125,16 @@ def cmd_sectors() -> dict:
 def cmd_macro() -> dict:
     from tools.macro_data import macro_dashboard
     return macro_dashboard()
+
+
+def cmd_crypto(symbol: str) -> dict:
+    from tools.crypto_data import crypto_overview
+    return crypto_overview(symbol)
+
+
+def cmd_crypto_market() -> dict:
+    from tools.crypto_data import crypto_market
+    return crypto_market()
 
 
 def cmd_themes(sub: str, rest: list) -> dict:
@@ -325,6 +337,14 @@ def main():
 
         elif command == "macro":
             result = cmd_macro()
+
+        elif command == "crypto":
+            if not args:
+                raise ValueError("사용법: crypto <TICKER> (예: BTC, ETH, SOL, BTC-USD)")
+            result = cmd_crypto(args[0])
+
+        elif command == "crypto-market":
+            result = cmd_crypto_market()
 
         elif command == "sectors":
             result = cmd_sectors()
