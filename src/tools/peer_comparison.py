@@ -8,9 +8,9 @@ import bisect
 import yfinance as yf
 
 try:
-    from tools.theme_etf_map import THEME_ETF_MAP
+    from tools.theme_etf_map import THEME_ETF_MAP, themes_for_ticker, theme_members
 except ImportError:
-    from theme_etf_map import THEME_ETF_MAP
+    from theme_etf_map import THEME_ETF_MAP, themes_for_ticker, theme_members
 
 
 INDUSTRY_PEERS = {
@@ -75,19 +75,24 @@ def _get_peer_tickers(industry: str, ticker: str) -> list:
 def _get_theme_peer_tickers(ticker: str) -> tuple:
     """메가트렌드 테마 폴백 피어.
 
-    INDUSTRY_PEERS 매칭이 실패했을 때, 타겟이 속한 THEME_ETF_MAP 테마의
-    대표종목(reps)에서 타겟 자신을 제외하고 피어로 사용한다.
+    INDUSTRY_PEERS 매칭이 실패했을 때, 타겟이 속한 테마의 멤버십
+    (ETF holdings ∪ reps − exclude)에서 타겟 자신을 제외하고 피어로 사용한다.
+    큐레이션 reps를 앞에 두고(클린·대표성) ETF holdings로 보강한다.
 
     Returns:
         (peer_tickers, theme_name). 매칭 테마가 없으면 ([], None).
     """
     ticker_upper = ticker.upper().strip()
-    for theme, cfg in THEME_ETF_MAP.items():
-        reps = cfg.get("reps", [])
-        if ticker_upper in [r.upper() for r in reps]:
-            peers = [r for r in reps if r.upper() != ticker_upper]
-            return peers, theme
-    return [], None
+    themes = themes_for_ticker(ticker_upper)
+    if not themes:
+        return [], None
+    theme = themes[0]
+    cfg = THEME_ETF_MAP.get(theme, {})
+    reps = [r.upper() for r in cfg.get("reps", [])]
+    extra = sorted(theme_members(theme) - set(reps))  # holdings 보강분
+    ordered = reps + extra
+    peers = [p for p in ordered if p != ticker_upper]
+    return peers, theme
 
 
 def _extract_metrics(info: dict) -> dict:

@@ -31,6 +31,9 @@ data/portfolio.md
 data/positions.md
 data/theses.md
 
+# ETF holdings 라이브 캐시 (자동 생성·갱신)
+data/cache/
+
 # 기타 로컬 산출물
 budget_*.pdf
 *:Zone.Identifier

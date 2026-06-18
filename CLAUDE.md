@@ -31,6 +31,9 @@ python3 src/tools/cli.py peers <TICKER> --peers T1,T2,T3   # 동종업계 비교
 python3 src/tools/cli.py insider <TICKER>         # 내부자 거래/기관보유
 python3 src/tools/cli.py momentum <TICKER>        # 모멘텀 분석 (상대강도 RS, 52주 신고가 돌파, 거래량 급증, momentum_score)
 python3 src/tools/cli.py sectors                  # 테마·섹터 자금흐름 랭킹 (발굴 엔진)
+python3 src/tools/cli.py themes <TICKER>          # 티커가 속한 메가트렌드 테마 + 적용 mandate
+python3 src/tools/cli.py themes list              # 테마별 멤버십 (ETF holdings ∪ reps − exclude)
+python3 src/tools/cli.py themes refresh           # ETF holdings 캐시 강제 갱신 (TTL 7일)
 
 # 웹 검색
 python3 src/tools/cli.py news-search "<QUERY>"   # 뉴스 키워드 검색 (yfinance)
@@ -83,6 +86,8 @@ python3 src/main.py <TICKER>
 - **default (보수)**: 밸류에이션 게이트(PER ≤ 50)와 보수적 포지션 한도(최대 10%, moderate)를 적용한다.
 - **megatrend (공격)**: 메가트렌드 테마 종목에 한해 PER 게이트를 비활성화하고, 더 큰 집중(최대 25%, aggressive, D/E 5.0)을 허용한다.
 - **티커 → 테마 자동선택**: 다음 메가트렌드 테마에 속한 티커는 자동으로 `megatrend` 프로파일을 사용한다 — AI·반도체 / SMR·원자력 / 우주 / 양자 / 방산 / DC(데이터센터) 전력 / 비만치료제 / 디지털 인프라. (그 외 종목은 `default`.)
+- **테마 멤버십은 동적**: `theme_members = (ETF 실제 top holdings ∪ reps) − exclude`. ETF 큐레이터가 정한 현재 구성을 yfinance로 라이브 반영(디스크 캐시 TTL 7일, 오프라인/실패 시 `reps` 폴백)하여 수기 명단이 낡아 신규 수혜주를 놓치는 문제를 막는다. `reps`=수동 시드(ETF top10 밖 핵심주), `exclude`=holdings로 딸려오나 megatrend 성격이 아닌 종목 차단(예: 방산 성숙 prime). 환경변수 `INVEST_ETF_LIVE=0`이면 정적 `reps`만 사용.
+  - ⚠️ 멤버십(리스크 컨테이너=mandate)은 ETF 편입이라는 **슬로우·구조적** 신호로만 판정한다. 뉴스/모멘텀 같은 변동 신호로 mandate를 흔들면 하이프가 집중 한도를 자동 해제하는 반사성 위험 → 그쪽은 확신도·진입 타이밍(`momentum`/`sectors`)에서만 다룬다.
 - CLI의 `--mandate` 옵션으로 자동선택을 수동 오버라이드할 수 있다 (`risk`, `mandate-check`).
 
 ## 메모 포맷 규격

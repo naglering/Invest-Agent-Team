@@ -91,6 +91,29 @@ def cmd_sectors() -> dict:
     return scan_sectors()
 
 
+def cmd_themes(sub: str, rest: list) -> dict:
+    """메가트렌드 테마 멤버십 조회/캐시 관리.
+
+    themes <TICKER>   티커가 속한 테마 + 적용 mandate
+    themes list       테마별 멤버십(ETF holdings ∪ reps − exclude)
+    themes refresh    ETF holdings 캐시 강제 갱신
+    """
+    from tools.theme_etf_map import (
+        THEME_ETF_MAP, themes_for_ticker, theme_members,
+        mandate_profile_for_ticker, refresh_holdings_cache,
+    )
+    if sub == "refresh":
+        return {"action": "refresh", "etf_holdings_count": refresh_holdings_cache()}
+    if sub == "list":
+        return {t: {"members": sorted(theme_members(t)),
+                    "reps": cfg.get("reps", []), "exclude": cfg.get("exclude", [])}
+                for t, cfg in THEME_ETF_MAP.items()}
+    # 기본: 티커 조회
+    t = sub.upper()
+    themes = themes_for_ticker(t)
+    return {"ticker": t, "themes": themes, "mandate_profile": mandate_profile_for_ticker(t)}
+
+
 def _parse_opt(args: list, name: str):
     """--name value 형태 옵션 파싱(없으면 None)."""
     for i, a in enumerate(args):
@@ -267,6 +290,11 @@ def main():
 
         elif command == "sectors":
             result = cmd_sectors()
+
+        elif command == "themes":
+            if not args:
+                raise ValueError("사용법: themes <TICKER|list|refresh>")
+            result = cmd_themes(args[0], args[1:])
 
         elif command == "valuation":
             if not args:
