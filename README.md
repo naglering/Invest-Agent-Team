@@ -4,16 +4,16 @@
 
 ### Claude Code Agent Teams 기반 멀티 에이전트 투자 분석 시스템
 
-**9명의 전문 에이전트 + Committee Chair**가 협업하여 종합 투자 판단을 수행합니다.<br/>
-자금이 몰리는 **메가트렌드 종목**에 대해 손절 규율 기반의 과감한 집중·모멘텀 베팅을 지원합니다.
+**10명의 전문 에이전트 + Committee Chair**가 협업하여 종합 투자 판단을 수행합니다.<br/>
+자금이 몰리는 **메가트렌드 종목**에 대해 손절 규율 기반의 과감한 집중·모멘텀 베팅을 지원하며, 디지털자산(코인)은 별도 **크립토 트랙**으로 분석합니다.
 
 <br/>
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Agent_Teams-D97757?logo=anthropic&logoColor=white)
-![Data](https://img.shields.io/badge/data-yfinance-7E3FF2)
-![Agents](https://img.shields.io/badge/agents-9%2B1-success)
-![Mandate](https://img.shields.io/badge/mandate-default_·_megatrend-orange)
+![Data](https://img.shields.io/badge/data-yfinance_·_CoinGecko_·_DefiLlama-7E3FF2)
+![Agents](https://img.shields.io/badge/agents-10%2B1-success)
+![Mandate](https://img.shields.io/badge/mandate-default_·_megatrend_·_crypto-orange)
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![PRs](https://img.shields.io/badge/PRs-welcome-blueviolet)
 
@@ -31,6 +31,8 @@
 - [설치](#설치)
 - [사용법](#사용법)
 - [매크로 분석](#매크로-분석)
+- [크립토 분석](#크립토-분석)
+- [PDF 보고서](#pdf-보고서)
 - [Mandate 프로파일](#mandate-프로파일)
 - [분석 모듈](#분석-모듈)
 - [에이전트 구성](#에이전트-구성)
@@ -68,7 +70,7 @@ flowchart TB
     Chair --- W["📝 Memo Writer<br/><sub>최종 투자 메모</sub>"]
 ```
 
-> 위 다이어그램은 `/invest:stock` 개별종목 위원회(8인 + Chair)입니다. 9번째 에이전트 **🌍 Macro Strategist**는 `/invest:macro`가 담당하는 **톱다운 매크로/레짐 분석**으로, 분석은 3단 하향식으로 흐릅니다 — **`/invest:macro`(레짐·자산배분) → `/invest:market`(섹터·테마) → `/invest:stock`(개별종목)**.
+> 위 다이어그램은 `/invest:stock` 개별종목 위원회(8인 + Chair)입니다. 9번째 에이전트 **🌍 Macro Strategist**는 `/invest:macro`가 담당하는 **톱다운 매크로/레짐 분석**으로, 분석은 3단 하향식으로 흐릅니다 — **`/invest:macro`(레짐·자산배분) → `/invest:market`(섹터·테마) → `/invest:stock`(개별종목)**. 10번째 에이전트 **🪙 Crypto Analyst**는 주식 깔때기와 분리된 **별도 크립토 트랙 `/invest:crypto`**(디지털자산 단일자산 심층 — `/invest:stock`의 크립토 버전)를 담당합니다.
 
 ---
 
@@ -82,10 +84,12 @@ pip install -r requirements.txt
 
 **의존성**: `yfinance` · `ta` · `pandas` · `numpy` · `requests` · `beautifulsoup4`
 
+> 📄 **PDF 보고서(`report-pdf` / `/invest:report`)만 추가 의존성 필요** (지연 import라 다른 기능엔 영향 없음): `pip install playwright jinja2 && playwright install chromium`, 그리고 시스템 바이너리 `apt-get install pandoc`. 자세한 내용은 [PDF 보고서](#pdf-보고서) 참고.
+
 ### 초기 세팅 (최초 1회, 필수 아님)
 
 ```bash
-python3 src/tools/cli.py setup            # data/mandates/{default,megatrend}.json 정본 생성
+python3 src/tools/cli.py setup            # data/mandates/{default,megatrend,crypto}.json 정본 생성
 python3 src/tools/cli.py portfolio init   # data/portfolio.md · theses.md · positions.md 템플릿 생성
 #   옵션: --force   # 기존 파일 덮어쓰기 (기본은 존재 시 건너뜀)
 ```
@@ -128,6 +132,15 @@ cp .env.example .env      # 샘플 복사 후 값 입력 (없어도 동작)
 # 매크로 분석 — 경기·정책 레짐·크로스에셋·자산배분 틸트 (톱다운, 시장 전체의 날씨)
 /invest:macro
 /invest:macro "스태그플레이션 리스크"
+
+# 크립토 분석 — 디지털자산(BTC·ETH·알트) 단일자산 심층 (/invest:stock의 크립토 버전)
+/invest:crypto BTC
+/invest:crypto ETH --quick
+/invest:crypto BTC,ETH,SOL
+
+# PDF 보고서 — 위원회 종합보고서(report.md)를 증권사 스타일 PDF로 출력
+/invest:report AAPL
+/invest:report AAPL --mode brief
 ```
 
 | 커맨드 | 용도 | 모드 |
@@ -137,6 +150,10 @@ cp .env.example .env      # 샘플 복사 후 값 입력 (없어도 동작)
 | `/invest:stock T1,T2,T3` | 다종목 비교·순위 | 비교 |
 | `/invest:market "<섹터/테마>"` | 섹터·테마 자금흐름·종목 스캔 | — |
 | `/invest:macro ["<주제>"]` | 경기·정책 레짐·크로스에셋·자산배분 틸트 (톱다운) | — |
+| `/invest:crypto <TICKER>` | 디지털자산 단일자산 심층 (6+1인 위원회) | 심층 (기본) |
+| `/invest:crypto <TICKER> --quick` | 빠른 답변 (질의면 자동) | 빠른 |
+| `/invest:crypto T1,T2,T3` | 다자산 비교·순위 | 비교 |
+| `/invest:report <TICKER> [--mode deep\|brief]` | 종합보고서를 증권사 스타일 PDF로 출력 | 출력 |
 | `/invest:portfolio` | 포트폴리오 구성·매수·매도·평가 | 관리 |
 | `/invest:setup` | 초기 세팅 (mandate·개인데이터 생성) | 세팅 |
 
@@ -179,6 +196,8 @@ python3 src/tools/cli.py mandate-check <TICKER>  # mandate 준수 확인 (--mand
 ```bash
 python3 src/tools/cli.py sectors                 # 테마·섹터 자금흐름 랭킹 (발굴 엔진)
 python3 src/tools/cli.py macro                   # 크로스에셋 레짐 대시보드 (일드커브·DXY·VIX·신용·금/유가/구리·BTC·net liquidity[FRED] → risk-on/off)
+python3 src/tools/cli.py crypto <TICKER>         # 디지털자산 네이티브 분석 (토크노믹스·온체인·아키타입별 멀티플 P/F·NVT·MVRV·S2F). 출력의 yfinance_symbol을 technical/risk/momentum에 사용
+python3 src/tools/cli.py crypto-market           # 크립토 시장구조 (BTC/ETH/alt 도미넌스·ETH/BTC·섹터 로테이션·스테이블코인 dry powder·Fear&Greed) — '주식의 sectors'
 python3 src/tools/cli.py portfolio               # 보유 종목 평가/손익/비중 (data/portfolio.md)
 #   옵션: --json    # JSON 출력
 #         --fx 1380 # 원/달러 환율 수동 지정
@@ -187,6 +206,21 @@ python3 src/tools/cli.py portfolio quote <TICKER>            # 매수 입력용 
 python3 src/tools/cli.py portfolio add <TICKER> --qty N --price P [--ccy USD|KRW] [--fx 1490]  # 매수
 python3 src/tools/cli.py portfolio remove <TICKER>          # 매도 (보유 종목 제거)
 python3 src/tools/cli.py setup                   # data/mandates/*.json 정본 생성
+```
+
+</details>
+
+<details>
+<summary><b>보고서 PDF</b></summary>
+
+```bash
+python3 src/tools/cli.py report-pdf <TICKER> --meta <path> [--mode deep|brief] [--date YYYY-MM-DD]
+#   report.md(deep)/summary.md(brief) → 증권사 스타일 A4 PDF (표지·Key-Data 사이드바·Risk-Reward 차트)
+#   옵션: --meta <path>   # 표지·사이드바·시나리오용 메타 JSON (--meta - 또는 --meta-stdin 이면 stdin)
+#         --mode deep|brief  # 기본 deep=report.md, brief=summary.md
+#         --date YYYY-MM-DD  # 메모 디렉토리 지정 (미지정 시 해당 티커 최신 디렉토리)
+#   → 결과: 같은 디렉토리에 report.pdf / summary.pdf (디버그용 .html 동반)
+#   ⚠️ 추가 의존성 필요: pip install playwright jinja2 && playwright install chromium, apt-get install pandoc
 ```
 
 </details>
@@ -268,16 +302,90 @@ cp .env.example .env
 
 ---
 
+## 크립토 분석
+
+디지털자산(코인)은 주식의 3단 깔때기와 **분리된 별도 트랙**입니다. `/invest:crypto`는 `/invest:stock`의 크립토 버전 — 주식의 재무제표/DCF/실적 대신 **토크노믹스·온체인 네트워크 가치·시장구조·카탈리스트**로 단일 자산을 심층 평가합니다. 시장구조 발굴은 `cli.py crypto-market`(주식의 `sectors`에 해당)이 담당합니다. 전담 에이전트 **🪙 crypto-analyst**가 주식의 financial+valuation+earnings를 크립토 문맥에서 한 명이 대체합니다.
+
+```mermaid
+flowchart LR
+    subgraph EQ ["주식 트랙"]
+        direction LR
+        A["🌍 /invest:macro"] --> B["🔥 /invest:market"] --> C["🔬 /invest:stock"]
+    end
+    subgraph CR ["크립토 트랙 (별도)"]
+        direction LR
+        D["🪙 cli.py crypto-market<br/><sub>도미넌스·로테이션·유동성</sub>"] --> EE["🪙 /invest:crypto<br/><sub>토크노믹스·온체인·밸류</sub>"]
+    end
+```
+
+**아키타입별 평가 멀티플** — `cli.py crypto`가 CoinGecko 카테고리로 자산을 6종 아키타입으로 분류하고, 아키타입에 맞는 멀티플만 적용합니다(출처: DefiLlama TVL·연환산 수수료/매출):
+
+| 아키타입 | 핵심 평가 지표 |
+|---------|---------------|
+| 🟠 **BTC** | 스톡투플로우(S2F)·NVT/NVT-signal(시총÷일일 온체인 거래량)·해시레이트·활성주소 (BTC만 Blockchain.com 온체인·S2F 결정론적 산출, MVRV는 WebSearch 보강) |
+| 🔵 **L1** | 체인 수수료/매출 P/F·P/S, TVL, mcap/TVL, 실질 스테이킹 수익률 |
+| 🟣 **L2** | 시퀀서 수수료·정산비용, **FDV 기준** P/F, 체인 TVL (저유통·고FDV) |
+| 🟢 **DeFi** | 프로토콜 수수료/매출 P/F·P/S, TVL, mcap/TVL, 실질수익률(이미션 제외) |
+| ⚪ **stablecoin** | 멀티플 전부 N/A(페그) — 발행량/페그/준비금/유동성 |
+| 🔴 **memecoin** | 펀더멘털 부재 — 홀더수·상위10 집중도·유동성/FDV·거래량 (고위험, 손절 규율 모멘텀 베팅) |
+
+**데이터 소스 — 전부 키리스(keyless) 공개 API**:
+
+| 소스 | 제공 데이터 |
+|------|------------|
+| CoinGecko | 가격·시총·랭킹·FDV·공급(circ/total/max)·ATH·카테고리·도미넌스·섹터 로테이션 |
+| DefiLlama | 체인/프로토콜 TVL·수수료·매출(P/F·P/S)·스테이블코인 발행량 |
+| Blockchain.com | BTC 온체인(활성주소·해시레이트·추정 거래량 → NVT) |
+| alternative.me | Crypto Fear & Greed |
+
+> 키리스로 안 나오는 항목(MVRV·MVRV-Z·실현가·SOPR·거래소 순흐름·언락/베스팅 캘린더·펀딩/OI/청산)은 crypto-analyst가 **WebSearch로 보강**합니다(`caveats`·`unlock_schedule`·`onchain_deep_note` 플래그가 보강 대상 표시).
+
+⚠️ **yfinance 심볼 트랩**: 단순 `심볼-USD`가 엉뚱한 토큰을 반환할 수 있어(`TON`→`TON11419-USD`, `UNI`→`UNI7083-USD`, `APT`→`APT21794-USD`, `POL`→`POL28321-USD` 등), `cli.py crypto` 출력의 **`yfinance_symbol`**(검증 심볼)을 technical/risk/momentum에 그대로 사용합니다.
+
+```bash
+python3 src/tools/cli.py crypto BTC          # 토크노믹스·온체인·아키타입 멀티플 (JSON)
+python3 src/tools/cli.py crypto-market       # 도미넌스·로테이션·스테이블코인·Fear&Greed
+/invest:crypto BTC                            # 풀 크립토 위원회 리포트 (6+1인)
+```
+
+> 오프라인 토글(선택): `INVEST_CRYPTO_LIVE=0` → 네트워크 미사용, well-formed 스켈레톤 반환.
+
+---
+
+## PDF 보고서
+
+위원회 종합보고서(`report.md`) 또는 요약(`summary.md`)을 **한국 증권사 애널리스트 리포트 스타일 A4 PDF**로 출력합니다. 1페이지 표지(헤더 밴드·Key-Data 사이드바·Key Takeaways·Risk-Reward 세로축 차트·확신도 ★·면책)는 메타 JSON으로 렌더하고, 본문은 `report.md`를 **그대로 이식**(재작성·요약 안 함)합니다. 본문 표는 자동으로 `Exhibit N` + 출처 푸터가 붙고, 판정 이모지(🟢🟡🔴✅❌)는 색상 기호(●▲▼✓✗)로 치환됩니다(이모지 폰트 불필요).
+
+```bash
+python3 src/tools/cli.py report-pdf AAPL --meta /tmp/AAPL_meta.json --mode deep
+/invest:report AAPL                           # 메타 JSON 자동 구성 → PDF 생성
+/invest:report AAPL --mode brief              # summary.md 요약형
+```
+
+- 입력: `data/histories/YYYY-MM-DD_TICKER/`의 `report.md`(deep) 또는 `summary.md`(brief). 보고서가 없으면 먼저 `/invest:stock`(또는 `/invest:crypto`)으로 생성해야 합니다.
+- 출력: 같은 디렉토리에 `report.pdf`/`summary.pdf` 생성(디버그용 `.html` 동반).
+
+> ⚠️ **추가 의존성 필요** — 이 기능은 `requirements.txt`에 없는 3가지를 별도 설치해야 합니다(모두 지연 import라 `report-pdf` 실행 시에만 필요하며 다른 CLI에는 영향 없음):
+> ```bash
+> pip install playwright jinja2      # pip 패키지
+> playwright install chromium        # 헤드리스 Chromium 브라우저 바이너리
+> apt-get install pandoc             # 시스템 바이너리 (gfm → html 변환)
+> ```
+
+---
+
 ## Mandate 프로파일
 
-자금 집중·모멘텀 베팅과 보수적 분산을 종목 성격에 맞춰 분리하기 위해 mandate를 2종 운영합니다.
+자금 집중·모멘텀 베팅과 보수적 분산을 종목 성격에 맞춰 분리하기 위해 mandate를 3종 운영합니다.
 
 | 프로파일 | PER 게이트 | 최대 비중 | 리스크 성향 | D/E | 대상 |
 |---------|:---------:|:--------:|:----------:|:---:|------|
 | 🛡️ `default` (보수) | PER ≤ 50 | 10% | moderate | — | 일반 종목 |
 | 🚀 `megatrend` (공격) | 비활성 | 25% | aggressive | 5.0 | 메가트렌드 테마 |
+| 🪙 `crypto` (디지털자산) | N/A | 20% | aggressive | N/A | 디지털자산 (시총 하한 $1B) |
 
-- **티커 → 테마 자동선택**: `AI·반도체` / `SMR·원자력` / `우주` / `양자` / `방산` / `DC(데이터센터) 전력` / `비만치료제` / `디지털 인프라` 테마 종목은 자동으로 `megatrend` 적용. 그 외는 `default`.
+- **티커 → 프로파일 자동선택**: yfinance `quoteType == CRYPTOCURRENCY`(BTC·ETH 등)면 자동으로 `crypto`. 그 외, `AI·반도체` / `SMR·원자력` / `우주` / `양자` / `방산` / `DC(데이터센터) 전력` / `비만치료제` / `디지털 인프라` 테마 종목은 자동으로 `megatrend`. 나머지는 `default`.
+- `crypto`는 PER/부채/배당 등 주식 게이트가 N/A — 토크노믹스·온체인 네트워크 가치·집중도·규제로 판단하고, 극단적 변동성은 손절 규율·사이징으로 관리합니다.
 - CLI `--mandate` 옵션으로 자동선택을 수동 오버라이드 가능 (`risk`, `mandate-check`).
 - ETF/펀드는 PER 게이트 면제 (decay/경로의존성으로 별도 판단).
 
@@ -297,6 +405,8 @@ cp .env.example .env
 | 내부자 분석 | `src/tools/insider_analysis.py` | 내부자 거래 패턴, 기관 보유 비중 |
 | 섹터 스캐너 | `src/tools/sector_scan.py` | 테마·섹터 ETF 모멘텀 랭킹 (자금흐름 발굴 엔진) |
 | 매크로 대시보드 | `src/tools/macro_data.py` | 크로스에셋 레짐 — 일드커브·DXY·VIX·신용 프록시·금/유가/구리·BTC·net liquidity(FRED) → 성장×인플레 4분면·risk_score (결정론적) |
+| 크립토 데이터 | `src/tools/crypto_data.py` | 디지털자산 네이티브 — 토크노믹스·온체인 네트워크 가치·아키타입별 멀티플(P/F·NVT·MVRV·S2F)·시장구조(도미넌스·로테이션·스테이블코인·Fear&Greed). 키리스 (CoinGecko·DefiLlama·Blockchain.com·alternative.me) |
+| 보고서 PDF | `src/tools/report_pdf.py` | report.md/summary.md → 증권사 스타일 A4 PDF (pandoc→html · Jinja2 템플릿 · Playwright Chromium). 표지·Risk-Reward 차트·Exhibit 번호 |
 | 테마 매핑 | `src/tools/theme_etf_map.py` | GICS 섹터 ETF + 메가트렌드 테마 ETF 바스켓/키워드/대표종목 |
 | 포트폴리오 | `src/tools/portfolio.py` | 보유 종목 평가/손익/비중 (현지통화 + 원화·환손익) |
 | 메모 관리 | `src/tools/memo_manager.py` | 투자 메모 CRUD, 검색 |
@@ -316,6 +426,7 @@ cp .env.example .env
 | ⚖️ Risk Officer | 리스크 평가, mandate 검증, 포지션 사이징 | 리스크 등급, 확신도 가중 비중 |
 | 📝 Memo Writer | 최종 보고서 작성 | 투자 메모 (MD 파일) |
 | 🌍 Macro Strategist | 톱다운 레짐·크로스에셋·자산배분 (`/invest:macro` 전용) | 성장×인플레 4분면, risk-on/off, 자산배분 틸트 |
+| 🪙 Crypto Analyst | 디지털자산 네이티브 분석 — 주식의 financial+valuation+earnings를 크립토 문맥에서 대체 (`/invest:crypto` 전용) | 아키타입별 멀티플 + 토크노믹스(FDV/MC·언락 희석) + 온체인 가치(NVT·MVRV·TVL·P/F) + 카탈리스트 + Bear/Base/Bull 적정가 |
 
 ---
 
@@ -355,17 +466,19 @@ invest-principal/
 │       ├── momentum.py          # 모멘텀/상대강도
 │       ├── sector_scan.py       # 섹터·테마 자금흐름 스캐너
 │       ├── macro_data.py        # 크로스에셋 매크로 레짐 대시보드 (FRED net liquidity 포함)
+│       ├── crypto_data.py       # 디지털자산 네이티브 — 토크노믹스·온체인·아키타입 멀티플 (키리스)
+│       ├── report_pdf.py        # report.md → 증권사 스타일 PDF (pandoc·Jinja2·Playwright)
 │       ├── theme_etf_map.py     # 테마/섹터 ETF 매핑
 │       ├── portfolio.py         # 포트폴리오 평가
 │       ├── setup_tool.py        # 초기 세팅 (mandate/개인데이터 템플릿)
 │       ├── memo_manager.py      # 메모 관리
 │       └── news_search.py       # 뉴스 검색
 ├── .claude/
-│   ├── agents/                  # 에이전트 프롬프트 정의 (9명, macro-strategist 포함)
-│   └── commands/invest/         # 슬래시 커맨드 정의 (stock, market, macro, portfolio, setup, report)
+│   ├── agents/                  # 에이전트 프롬프트 정의 (10명, macro-strategist·crypto-analyst 포함)
+│   └── commands/invest/         # 슬래시 커맨드 정의 (stock, market, macro, crypto, portfolio, setup, report)
 ├── data/                        # 골격만 추적 — 개인 데이터는 .gitignore
 │   ├── histories/               # 투자 메모 — YYYY-MM-DD_TICKER/{summary.md,report.md} (EXAMPLE/만 추적)
-│   ├── mandates/                # 투자 mandate 설정 (default, megatrend)
+│   ├── mandates/                # 투자 mandate 설정 (default, megatrend, crypto)
 │   ├── portfolio.md             # 보유 종목 테이블 (ignore, `portfolio init`로 생성)
 │   ├── theses.md                # 보유 Thesis (ignore)
 │   └── positions.md             # 포지션 비중 (ignore)
@@ -383,7 +496,9 @@ invest-principal/
 - 🔍 **메가트렌드 발굴 엔진** — 섹터·테마 ETF 모멘텀 랭킹으로 자금이 몰리는 곳을 능동 탐지
 - 🚀 **모멘텀/상대강도** — 52주 신고가 돌파·거래량 급증·RS로 추세 추종 진입 포착
 - 🧮 **2단계 DCF 모델** — Phase 1(1~5년) 고성장 + Phase 2(6~10년) 영구성장률까지 선형 체감, 음수 FCF 성장가치 경로
-- 🎚️ **mandate 2종 + 자동선택** — 메가트렌드 테마는 PER 게이트 면제·집중 허용, 일반 종목은 보수 한도
+- 🎚️ **mandate 3종 + 자동선택** — 메가트렌드 테마는 PER 게이트 면제·집중 허용, 디지털자산은 crypto 프로파일(주식 게이트 N/A), 일반 종목은 보수 한도
+- 🪙 **크립토 네이티브 트랙** — 토크노믹스·온체인(NVT·MVRV·TVL·P/F)·아키타입별 멀티플·시장구조로 코인을 별도 분석 (키리스 데이터)
+- 📄 **증권사 스타일 PDF** — 종합보고서를 표지·Key-Data 사이드바·Risk-Reward 차트·Exhibit 번호가 붙은 A4 PDF로 출력
 - 🎯 **확신도 가중 사이징** — 자동 감점 캡 대신 확신도가 비중을 키우는 입력, 시나리오 기반 Kelly
 - 🛡️ **규율 있는 집중** — 피라미딩 트리거·트레일링 스톱·R-multiple로 손절 규율 전제
 - 👥 **이중 추천 체계** — 현재 보유자와 신규 투자자에게 각각 다른 행동 지침 제시
