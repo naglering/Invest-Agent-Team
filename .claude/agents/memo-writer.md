@@ -83,6 +83,7 @@ echo '<JSON>' | python3 src/tools/cli.py memo write <TICKER>
 ## 주의사항
 
 - JSON 내 특수문자 이스케이프 주의
+- **물결표(`~`) 금지**: 마크다운 뷰어(GFM)가 `~`를 취소선으로 해석하므로 메모 본문에 쓰지 않는다. 숫자 **범위**는 `–`/`-`(예: `$360–430`, `−40–50%`, `15–25%`), **근사값**은 `약`(예: `약 $660`)으로 표기.
 - 모든 필드를 빠짐없이 채움 (데이터 없으면 "N/A")
 - **valuation_summary, position_sizing, scenario_analysis 필드 필수**
 - **decision_holder와 decision_new를 분리하여 작성 필수**
