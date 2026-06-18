@@ -41,7 +41,7 @@
 
 ## 투자 철학
 
-보수적 분산 일변도가 아니라, 자금이 몰리는 **메가트렌드·강한 서사 종목**에 대해서는 **손절 규율 기반의 과감한 집중·모멘텀 베팅**을 허용합니다. 페르소나는 20년차 개인 투자 전문가(연 100%+ 수익) 관점이며, 모든 산출물은 참고 자료입니다.
+보수적 분산 일변도가 아니라, 자금이 몰리는 **메가트렌드·강한 서사 종목**에 대해서는 **손절 규율 기반의 과감한 집중·모멘텀 베팅**을 허용합니다.
 
 | 원칙 | 내용 |
 |------|------|
@@ -79,9 +79,7 @@ pip install -r requirements.txt
 
 **의존성**: `yfinance` · `ta` · `pandas` · `numpy` · `requests` · `beautifulsoup4`
 
-### 초기 세팅 (최초 1회)
-
-개인 투자 데이터(보유 종목·Thesis·투자 메모)는 **GitHub에 올라가지 않습니다**(`.gitignore`). 레포에는 골격(구조 + `data/mandates` + `data/histories/EXAMPLE.md`)만 포함되므로, 클론 직후 본인 데이터 파일을 생성한 뒤 직접 편집해 사용합니다.
+### 초기 세팅 (최초 1회, 필수 아님)
 
 ```bash
 python3 src/tools/cli.py setup            # data/mandates/{default,megatrend}.json 정본 생성
@@ -323,7 +321,5 @@ invest-principal/
 
 <div align="center">
 <br/>
-
-*Built with [Claude Code](https://claude.com/claude-code) Agent Teams* 🤖
 
 </div>
