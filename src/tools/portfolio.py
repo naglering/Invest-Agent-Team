@@ -278,30 +278,68 @@ def remove_holding(ticker, path=None) -> dict:
     return {"action": "removed", "ticker": ticker, "removed": removed, "count": len(kept)}
 
 
+def _pick_extended_price(info: dict):
+    """marketState 기준으로 프리/정규/애프터 중 최신 체결가 선택.
+    반환 (price, session) — session ∈ {PRE, REGULAR, POST, CLOSED}."""
+    state = (info.get("marketState") or "").upper()
+    reg = info.get("regularMarketPrice")
+    pre = info.get("preMarketPrice")
+    post = info.get("postMarketPrice")
+    if state == "PRE" and pre:
+        return pre, "PRE"
+    # 장 마감 후(POST/POSTPOST/CLOSED)엔 애프터마켓 최종가가 최신
+    if state in ("POST", "POSTPOST", "CLOSED") and post:
+        return post, "POST"
+    if reg:
+        # 정규가를 쓰면 세션은 REGULAR (연장가 미사용)
+        return reg, "REGULAR"
+    # 정규가 없으면 가용한 연장거래가라도
+    if post:
+        return post, "POST"
+    if pre:
+        return pre, "PRE"
+    return None, state or None
+
+
 def _fetch_price(ticker: str):
-    """현재가와 상장통화 반환. 실패 시 (None, None)."""
+    """현재가·상장통화·세션 반환. 정규장 외 시간엔 프리/애프터마켓 최신가 우선.
+    실패 시 (None, None, None)."""
     try:
         tk = yf.Ticker(ticker)
-        price, listed_ccy = None, None
+        price, listed_ccy, session = None, None, None
+        # 1순위: .info — 프리/정규/애프터 + marketState 제공
         try:
-            fi = tk.fast_info
-            price = fi.get("last_price") or fi.get("lastPrice")
-            listed_ccy = fi.get("currency")
+            info = tk.info
+            listed_ccy = info.get("currency")
+            price, session = _pick_extended_price(info)
         except Exception:
             pass
+        # 2순위: fast_info 최종체결가
+        if price is None:
+            try:
+                fi = tk.fast_info
+                price = fi.get("last_price") or fi.get("lastPrice")
+                listed_ccy = listed_ccy or fi.get("currency")
+                if price is not None:
+                    session = session or "REGULAR"
+            except Exception:
+                pass
+        # 3순위: 최근 종가
         if price is None:
             hist = tk.history(period="5d")
             if not hist.empty:
                 price = float(hist["Close"].dropna().iloc[-1])
+                session = session or "REGULAR"
         return (float(price) if price else None,
-                listed_ccy.upper() if listed_ccy else None)
+                listed_ccy.upper() if listed_ccy else None,
+                session)
     except Exception:
-        return (None, None)
+        return (None, None, None)
 
 
 def _fetch_usdkrw():
     """현재 원/달러 환율. 실패 시 None."""
-    price, _ = _fetch_price("USDKRW=X")
+    price, _, _ = _fetch_price("USDKRW=X")
     return price
 
 
@@ -318,7 +356,7 @@ def analyze_portfolio(path: str = None, fx_override: float = None) -> dict:
     total_cost_krw = total_value_krw = 0.0
 
     for h in holdings:
-        price, listed_ccy = _fetch_price(h["ticker"])
+        price, listed_ccy, session = _fetch_price(h["ticker"])
         qty, buy = h["quantity"], h["buy_price"]
         ccy = h["currency"]
 
@@ -343,7 +381,7 @@ def analyze_portfolio(path: str = None, fx_override: float = None) -> dict:
                 **h, "current_price": None, "value_native": None,
                 "value_krw": None, "pnl_native": None, "pnl_pct_native": None,
                 "pnl_krw": None, "pnl_pct_krw": None, "weight_pct": None,
-                "cost_krw": round(cost_krw, 0),
+                "cost_krw": round(cost_krw, 0), "price_session": session,
             })
             total_cost_krw += cost_krw
             continue
@@ -360,6 +398,7 @@ def analyze_portfolio(path: str = None, fx_override: float = None) -> dict:
             "currency": ccy,
             "buy_fx": h["buy_fx"],
             "current_price": round(price, 2),
+            "price_session": session,
             "current_fx": round(cur_fx, 2) if ccy == "USD" else None,
             "cost_krw": round(cost_krw, 0),
             "value_native": round(value_native, 2),
@@ -428,8 +467,10 @@ def render_table(result: dict) -> str:
     out.append("-" * 96)
 
     for r in rows:
+        sess = r.get("price_session")
+        mark = "*" if sess in ("PRE", "POST") else ""
         line = (
-            f"{r['ticker']:<11}"
+            f"{(r['ticker'] + mark):<11}"
             f"{_fmt(r.get('quantity'), 0):>7}"
             f"{_fmt(r.get('buy_price'), 2):>11}"
             f"{_fmt(r.get('current_price'), 2):>11}"
@@ -451,6 +492,14 @@ def render_table(result: dict) -> str:
     out.append(total_line)
     out.append("=" * 96)
     out.append(f"투자원금(KRW): {_fmt(t.get('cost_krw'))}    평가액(KRW): {_fmt(t.get('value_krw'))}")
+
+    # 연장거래(프리/애프터) 반영 종목 표기
+    ext = [(r["ticker"], r["price_session"], r.get("current_price"))
+           for r in rows if r.get("price_session") in ("PRE", "POST")]
+    if ext:
+        label = {"PRE": "프리마켓", "POST": "애프터마켓"}
+        tags = ", ".join(f"{tk} {label[s]} {_fmt(p, 2)}" for tk, s, p in ext)
+        out.append(f"* 연장거래 최신가 반영: {tags}")
 
     # 종목별 현지통화 수익률(환손익 분리) 보조 표기
     usd_rows = [r for r in rows if r.get("currency") == "USD" and r.get("pnl_pct_native") is not None]
