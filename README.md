@@ -4,7 +4,7 @@
 
 ### Claude Code Agent Teams 기반 멀티 에이전트 투자 분석 시스템
 
-**8명의 전문 에이전트 + Committee Chair**가 협업하여 종합 투자 판단을 수행합니다.<br/>
+**9명의 전문 에이전트 + Committee Chair**가 협업하여 종합 투자 판단을 수행합니다.<br/>
 자금이 몰리는 **메가트렌드 종목**에 대해 손절 규율 기반의 과감한 집중·모멘텀 베팅을 지원합니다.
 
 <br/>
@@ -12,7 +12,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Agent_Teams-D97757?logo=anthropic&logoColor=white)
 ![Data](https://img.shields.io/badge/data-yfinance-7E3FF2)
-![Agents](https://img.shields.io/badge/agents-8%2B1-success)
+![Agents](https://img.shields.io/badge/agents-9%2B1-success)
 ![Mandate](https://img.shields.io/badge/mandate-default_·_megatrend-orange)
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![PRs](https://img.shields.io/badge/PRs-welcome-blueviolet)
@@ -30,6 +30,7 @@
 - [아키텍처](#아키텍처)
 - [설치](#설치)
 - [사용법](#사용법)
+- [매크로 분석](#매크로-분석)
 - [Mandate 프로파일](#mandate-프로파일)
 - [분석 모듈](#분석-모듈)
 - [에이전트 구성](#에이전트-구성)
@@ -67,6 +68,8 @@ flowchart TB
     Chair --- W["📝 Memo Writer<br/><sub>최종 투자 메모</sub>"]
 ```
 
+> 위 다이어그램은 `/invest:stock` 개별종목 위원회(8인 + Chair)입니다. 9번째 에이전트 **🌍 Macro Strategist**는 `/invest:macro`가 담당하는 **톱다운 매크로/레짐 분석**으로, 분석은 3단 하향식으로 흐릅니다 — **`/invest:macro`(레짐·자산배분) → `/invest:market`(섹터·테마) → `/invest:stock`(개별종목)**.
+
 ---
 
 ## 설치
@@ -88,6 +91,16 @@ python3 src/tools/cli.py portfolio init   # data/portfolio.md · theses.md · po
 ```
 
 생성된 `data/portfolio.md`의 예시 종목을 본인 보유 종목으로 교체한 뒤 `cli.py portfolio`로 평가합니다.
+
+### (선택) 환경변수 `.env`
+
+매크로 분석의 net liquidity 지표를 위한 **FRED API 키** 등 환경변수는 `.env`로 관리합니다. **없어도 시스템은 정상 동작**합니다(공개 CSV 폴백). 키를 넣으면 더 견고합니다.
+
+```bash
+cp .env.example .env      # 샘플 복사 후 값 입력 (없어도 동작)
+```
+
+`cli.py`가 실행 시 레포 루트의 `.env`를 자동 로드합니다(python-dotenv 불필요). `.env`는 `.gitignore`되어 커밋되지 않으며, 샘플만 `.env.example`로 추적됩니다. FRED 키 발급법은 [매크로 분석 › FRED API 키 설정](#fred-api-키-설정-선택-env) 참고.
 
 ---
 
@@ -111,6 +124,10 @@ python3 src/tools/cli.py portfolio init   # data/portfolio.md · theses.md · po
 # 시장분석 — 섹터/테마/매크로 환경 분석 및 투자 전략
 /invest:market "반도체 섹터 전망"
 /invest:market "금리 인하기 성장주 전략"
+
+# 매크로 분석 — 경기·정책 레짐·크로스에셋·자산배분 틸트 (톱다운, 시장 전체의 날씨)
+/invest:macro
+/invest:macro "스태그플레이션 리스크"
 ```
 
 | 커맨드 | 용도 | 모드 |
@@ -118,7 +135,8 @@ python3 src/tools/cli.py portfolio init   # data/portfolio.md · theses.md · po
 | `/invest:stock <TICKER>` | 개별종목 심층 분석 (8인 위원회) | 심층 (기본) |
 | `/invest:stock <TICKER> --quick` | 빠른 답변 (질의면 자동) | 빠른 |
 | `/invest:stock T1,T2,T3` | 다종목 비교·순위 | 비교 |
-| `/invest:market "<섹터/테마>"` | 섹터·테마·매크로 분석 | — |
+| `/invest:market "<섹터/테마>"` | 섹터·테마 자금흐름·종목 스캔 | — |
+| `/invest:macro ["<주제>"]` | 경기·정책 레짐·크로스에셋·자산배분 틸트 (톱다운) | — |
 | `/invest:portfolio` | 포트폴리오 구성·매수·매도·평가 | 관리 |
 | `/invest:setup` | 초기 세팅 (mandate·개인데이터 생성) | 세팅 |
 
@@ -160,6 +178,7 @@ python3 src/tools/cli.py mandate-check <TICKER>  # mandate 준수 확인 (--mand
 
 ```bash
 python3 src/tools/cli.py sectors                 # 테마·섹터 자금흐름 랭킹 (발굴 엔진)
+python3 src/tools/cli.py macro                   # 크로스에셋 레짐 대시보드 (일드커브·DXY·VIX·신용·금/유가/구리·BTC·net liquidity[FRED] → risk-on/off)
 python3 src/tools/cli.py portfolio               # 보유 종목 평가/손익/비중 (data/portfolio.md)
 #   옵션: --json    # JSON 출력
 #         --fx 1380 # 원/달러 환율 수동 지정
@@ -201,6 +220,54 @@ python3 src/main.py <TICKER>
 
 ---
 
+## 매크로 분석
+
+`/invest:macro`는 분석 3단 깔때기의 **최상단**입니다 — 개별 종목·섹터를 스캔하지 않고 **시장 전체의 날씨**(성장×인플레 레짐·연준 정책·유동성)를 글로벌(미국 중심) 톱다운으로 읽어, 자산배분 자세(공격/중립/방어)와 팩터·듀레이션 틸트까지 제시합니다. 9번째 에이전트 **Macro Strategist**(글로벌 IB 수석 매크로 전략가 페르소나)가 담당합니다.
+
+```mermaid
+flowchart LR
+    A["🌍 /invest:macro<br/><sub>레짐·크로스에셋·자산배분</sub>"] --> B["🔥 /invest:market<br/><sub>섹터·테마 자금흐름</sub>"] --> C["🔬 /invest:stock<br/><sub>개별 종목 심층</sub>"]
+```
+
+**경제·금리·통화·유동성 4기둥을 정량 근거 위에서 판단**합니다 (`cli.py macro` = yfinance 크로스에셋 + FRED net liquidity, 결정론적 레짐 점수):
+
+| 기둥 | 정량 백본 | 리포트 산출 |
+|------|-----------|-------------|
+| 📊 경제 | 구리/금·SPY 추세·곡선 → 성장×인플레 4분면 | 레짐 분류 + cycle_stage |
+| 💵 금리 | 일드커브(10y-3m/10y-5y/30y-5y, 2y 프록시)·스프레드·형태 | 연준 반응함수 |
+| 💱 통화 | DXY·원/달러 | 중앙은행 divergence + 🇰🇷 한국 렌즈 |
+| 💧 유동성 | **net liquidity = WALCL − TGA − RRP (FRED)** + BTC | 4주 추세 순풍/역풍 |
+
+산출물: Tape-First 결론(레짐 + 베이스케이스 + 확률 + 자세) → 4분면 → 연준/유동성 → 침체확률 패널 → 크로스에셋 교차검증 → 확률가중 시나리오(falsifier) → 자산배분 틸트 → 카탈리스트 캘린더. 발표형 지표(Sahm·ISM·CPI·점도표)는 에이전트가 WebSearch로 보강하며, risk-on/off·4분면 판정은 **수치로만**(LLM 인상비평 금지) 산출합니다.
+
+```bash
+python3 src/tools/cli.py macro          # 정량 대시보드 (JSON)
+/invest:macro                            # 풀 매크로 레짐 리포트
+/invest:macro "달러 약세 시나리오"        # 특정 렌즈 강조
+```
+
+### FRED API 키 설정 (선택, .env)
+
+net liquidity는 FRED 데이터를 씁니다. **키 없이도 공개 CSV로 동작**하지만, FRED 공식 API 키를 넣으면 throttle 없는 견고한 JSON 경로를 씁니다 — 키 미설정 시 CSV로 자동 폴백, 둘 다 실패 시 `liquidity:null` + 에이전트가 WebSearch로 보강.
+
+**키 발급 (무료, 약 1분):**
+1. [FRED 계정 생성/로그인](https://fredaccount.stlouisfed.org/login/secure/) (무료)
+2. [API Keys 페이지](https://fredaccount.stlouisfed.org/apikeys) → **Request API Key**
+3. 발급된 **32자 영숫자 키** 복사 (문서: [FRED API key docs](https://fred.stlouisfed.org/docs/api/api_key.html))
+
+**설정:**
+```bash
+cp .env.example .env
+# .env 를 열어 한 줄 입력:
+#   INVEST_FRED_API_KEY=여기에_발급받은_32자_키
+```
+
+`cli.py`가 실행 시 레포 루트의 `.env`를 자동 로드합니다(python-dotenv 불필요). `.env`는 `.gitignore`되어 커밋되지 않으며, 샘플은 `.env.example`로 추적됩니다.
+
+> 그 외 토글(모두 선택): `INVEST_MACRO_LIVE=0`(오프라인 스켈레톤) · `INVEST_MACRO_FRED=0`(FRED만 건너뜀) · `INVEST_ETF_LIVE=0`(테마 ETF 정적 모드). 자세한 설명은 `.env.example` 참고.
+
+---
+
 ## Mandate 프로파일
 
 자금 집중·모멘텀 베팅과 보수적 분산을 종목 성격에 맞춰 분리하기 위해 mandate를 2종 운영합니다.
@@ -229,6 +296,7 @@ python3 src/main.py <TICKER>
 | 리스크 분석 | `src/tools/risk_analyzer.py` | VaR, 변동성, 최대 낙폭, 베타, mandate 검증, 확신도 가중 포지션 사이징, 시나리오 Kelly |
 | 내부자 분석 | `src/tools/insider_analysis.py` | 내부자 거래 패턴, 기관 보유 비중 |
 | 섹터 스캐너 | `src/tools/sector_scan.py` | 테마·섹터 ETF 모멘텀 랭킹 (자금흐름 발굴 엔진) |
+| 매크로 대시보드 | `src/tools/macro_data.py` | 크로스에셋 레짐 — 일드커브·DXY·VIX·신용 프록시·금/유가/구리·BTC·net liquidity(FRED) → 성장×인플레 4분면·risk_score (결정론적) |
 | 테마 매핑 | `src/tools/theme_etf_map.py` | GICS 섹터 ETF + 메가트렌드 테마 ETF 바스켓/키워드/대표종목 |
 | 포트폴리오 | `src/tools/portfolio.py` | 보유 종목 평가/손익/비중 (현지통화 + 원화·환손익) |
 | 메모 관리 | `src/tools/memo_manager.py` | 투자 메모 CRUD, 검색 |
@@ -247,6 +315,7 @@ python3 src/main.py <TICKER>
 | 📰 Market Analyst | 시장 심리, 뉴스, 거버넌스 | 감성 스코어, 내부자 동향 |
 | ⚖️ Risk Officer | 리스크 평가, mandate 검증, 포지션 사이징 | 리스크 등급, 확신도 가중 비중 |
 | 📝 Memo Writer | 최종 보고서 작성 | 투자 메모 (MD 파일) |
+| 🌍 Macro Strategist | 톱다운 레짐·크로스에셋·자산배분 (`/invest:macro` 전용) | 성장×인플레 4분면, risk-on/off, 자산배분 틸트 |
 
 ---
 
@@ -285,20 +354,22 @@ invest-principal/
 │       ├── insider_analysis.py  # 내부자 거래
 │       ├── momentum.py          # 모멘텀/상대강도
 │       ├── sector_scan.py       # 섹터·테마 자금흐름 스캐너
+│       ├── macro_data.py        # 크로스에셋 매크로 레짐 대시보드 (FRED net liquidity 포함)
 │       ├── theme_etf_map.py     # 테마/섹터 ETF 매핑
 │       ├── portfolio.py         # 포트폴리오 평가
 │       ├── setup_tool.py        # 초기 세팅 (mandate/개인데이터 템플릿)
 │       ├── memo_manager.py      # 메모 관리
 │       └── news_search.py       # 뉴스 검색
 ├── .claude/
-│   ├── agents/                  # 에이전트 프롬프트 정의 (8명)
-│   └── commands/invest/         # 슬래시 커맨드 정의 (stock, market)
+│   ├── agents/                  # 에이전트 프롬프트 정의 (9명, macro-strategist 포함)
+│   └── commands/invest/         # 슬래시 커맨드 정의 (stock, market, macro, portfolio, setup, report)
 ├── data/                        # 골격만 추적 — 개인 데이터는 .gitignore
 │   ├── histories/               # 투자 메모 — YYYY-MM-DD_TICKER/{summary.md,report.md} (EXAMPLE/만 추적)
 │   ├── mandates/                # 투자 mandate 설정 (default, megatrend)
 │   ├── portfolio.md             # 보유 종목 테이블 (ignore, `portfolio init`로 생성)
 │   ├── theses.md                # 보유 Thesis (ignore)
 │   └── positions.md             # 포지션 비중 (ignore)
+├── .env.example                 # 환경변수 샘플 (FRED API 키 등 — 실제 .env 는 .gitignore)
 ├── CLAUDE.md                    # 프로젝트 지침
 ├── CHANGELOG.md                 # 변경 이력
 ├── requirements.txt

@@ -11,6 +11,10 @@ venv/
 .venv/
 env/
 
+# 로컬 비밀/환경변수 — .env는 추적 금지, 샘플(.env.example)만 커밋
+.env
+!.env.example
+
 # IDE
 .vscode/
 .idea/

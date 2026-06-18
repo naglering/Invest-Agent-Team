@@ -12,6 +12,7 @@
     python src/tools/cli.py peers <TICKER>
     python src/tools/cli.py insider <TICKER>
     python src/tools/cli.py momentum <TICKER>           (상대강도·신고가 돌파·거래량)
+    python src/tools/cli.py macro                       (크로스에셋 레짐 대시보드 — 일드커브·DXY·VIX·신용·원자재·BTC)
     python src/tools/cli.py sectors                     (테마·섹터 자금흐름 랭킹 — 발굴)
     python src/tools/cli.py memo list
     python src/tools/cli.py memo read <TICKER> [summary|report|both]
@@ -28,6 +29,8 @@
     python src/tools/cli.py portfolio add <TICKER> --qty N --price P [--ccy USD|KRW] [--fx 1380]  (매수)
     python src/tools/cli.py portfolio remove <TICKER>  (매도 — 보유 종목 제거)
     python src/tools/cli.py setup [--force]            (data/mandates/*.json 정본 생성)
+    python src/tools/cli.py report-pdf <TICKER> [--meta <path>|--meta-stdin] [--mode deep|brief] [--date YYYY-MM-DD]
+                                                       (histories의 report.md/summary.md → 증권사 스타일 PDF)
 """
 
 import sys
@@ -42,6 +45,32 @@ warnings.filterwarnings("ignore", module="yfinance")
 
 # src/ 디렉토리를 path에 추가 (기존 모듈 import용)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _load_dotenv():
+    """레포 루트의 .env를 os.environ에 로드(이미 설정된 환경변수는 보존). python-dotenv 불필요.
+
+    형식: KEY=VALUE 한 줄씩. '#' 주석·빈 줄·선택적 'export ' 접두·따옴표를 허용한다.
+    예: INVEST_FRED_API_KEY=xxxx (매크로 net liquidity의 FRED 공식 API 키 — 선택).
+    """
+    path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
 
 
 def cmd_fundamental(ticker: str) -> dict:
@@ -89,6 +118,11 @@ def cmd_momentum(ticker: str) -> dict:
 def cmd_sectors() -> dict:
     from tools.sector_scan import scan_sectors
     return scan_sectors()
+
+
+def cmd_macro() -> dict:
+    from tools.macro_data import macro_dashboard
+    return macro_dashboard()
 
 
 def cmd_themes(sub: str, rest: list) -> dict:
@@ -232,6 +266,7 @@ def cmd_memo(subcommand: str, args: list) -> dict:
 
 
 def main():
+    _load_dotenv()  # .env의 INVEST_FRED_API_KEY 등을 환경변수로 로드(선택)
     if len(sys.argv) < 2:
         print(json.dumps({"error": "사용법: python src/tools/cli.py <command> [args]"}, ensure_ascii=False))
         sys.exit(1)
@@ -288,6 +323,9 @@ def main():
                 raise ValueError("사용법: momentum <TICKER>")
             result = cmd_momentum(args[0].upper())
 
+        elif command == "macro":
+            result = cmd_macro()
+
         elif command == "sectors":
             result = cmd_sectors()
 
@@ -327,6 +365,12 @@ def main():
 
         elif command == "setup":
             result = cmd_setup(args)
+
+        elif command == "report-pdf":
+            if not args:
+                raise ValueError("사용법: report-pdf <TICKER> [--meta <path>|--meta-stdin] [--mode deep|brief] [--date YYYY-MM-DD]")
+            from tools.report_pdf import build_from_args
+            result = build_from_args(args[0].upper(), args[1:])
 
         else:
             result = {"error": f"알 수 없는 명령: {command}"}
