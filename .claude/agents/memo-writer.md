@@ -91,3 +91,4 @@ echo '<JSON>' | python3 src/tools/cli.py memo write <TICKER>
 - **시나리오는 Base 중심·확률가중에 더해, 'Bull 실현 시 상방배수 vs 손절 제한손실' payoff ratio를 1급 산출물로** 반드시 산출 (scenario_analysis 및 payoff_ratio 필드)
 - **적자/음수 FCF 종목**: thesis 첫 문장에 -90%대 표준 DCF 수치를 배치하지 말고, valuation 도구의 `dcf.growth_valuation`(정규화DCF·P/S·EV/Sales)을 valuation_summary의 근거로 사용 (표준 DCF는 None으로 반환됨)
 - 모든 내용은 한국어로 작성
+- **용어 한글화 (필수)**: 메모 작성 전 `.claude/commands/invest/glossary.md`를 Read해 규칙을 적용한다. 영어를 한글 문장에 그대로 박지 말고(conviction·payoff·re-rating 등 → 한글), 불투명한 직역·신조어 금지(strong/weak hands → "강한 손/약한 손" ✗ → "장기 보유세력/단타세력"). 단 `payoff_ratio` 등 JSON 키 이름은 영문 유지.

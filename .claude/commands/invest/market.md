@@ -127,6 +127,22 @@ python3 src/tools/cli.py momentum <TICKER>
 
 모든 에이전트 결과를 종합하여 섹터 내 상대 매력도를 평가하고, 톱픽과 비중 전략을 도출합니다.
 
+## 저장 + PDF (양 모드 공통, 필수)
+
+작성한 보고서 **전문**을 `data/histories/`에 저장합니다(PDF는 사용자에게 물어본 뒤 생성). 시장분석은 개별 종목이 아니므로 의사(疑似)티커를 사용합니다 — **모드 M(시장 전반)이면 `SECTOR-REVIEW`, 모드 S(지정 섹터/테마)면 섹터 약칭 대문자**(예: `ENERGY`, `SEMI`, `URANIUM`).
+
+```bash
+# (1) 종합보고서 저장 → data/histories/<YYYY-MM-DD>_<PSEUDO>/report.md
+python3 src/tools/cli.py memo report <PSEUDO>   # stdin으로 보고서 전문 입력
+```
+
+- 시장분석 보고서는 **요약(summary.md) 없이 report.md만** 저장합니다(memo-writer 파이프라인 비해당). 따라서 PDF는 항상 `--mode deep`(report.md 기반).
+- **(2) PDF 출력 여부 질문 (필수)**: 저장 후 사용자에게 보고서를 그대로 출력하고 `report.md` 경로를 한 줄 보고한 뒤, **`AskUserQuestion`으로 PDF 생성 여부를 묻습니다**(자동 생성하지 않음). 생성 선택 시에만 아래를 실행하고 `report.pdf` 경로를 보고합니다. 미선택 시 종료.
+  ```bash
+  python3 src/tools/cli.py report-pdf <PSEUDO> --meta-stdin --mode deep   # stdin으로 메타 JSON 입력
+  ```
+- **메타 JSON 구성**: `company`(예: "에너지 섹터 분석" 또는 "시장 자금흐름 리뷰"), `ticker`(의사티커), `report_type`("Sector/Market"), `date`, `headline`(핵심 판단 1줄), `key_data`(시장 국면·추천 자세·상위 유입 테마·핵심 지표 등 라벨/값 배열), `takeaways`(3-4개). **개별 종목 목표가가 없으면 `scenarios`는 생략**(Risk-Reward 차트 자동 생략).
+
 ## 보고서 형식
 
 ### 시각화 규칙
@@ -135,6 +151,7 @@ python3 src/tools/cli.py momentum <TICKER>
 - **방향**: ⬆️ 긍정 영향, ⬇️ 부정 영향, ➖ 중립
 - **확신도**: ⭐ 단위 (예: ⭐⭐⭐☆☆)
 - **물결표(`~`) 금지**: 마크다운 뷰어(GFM)는 `~`를 취소선으로 해석하여 한 줄에 둘 이상 쓰면 그 사이가 취소선 처리된다. 숫자 **범위**는 `–`(en dash)나 `-`로(예: `$360–430`, `+30–40%`, `15–25%`), **근사값**은 `약`으로(예: `약 95%`) 표기한다. `~`를 직접 쓰지 않는다.
+- **용어 한글화 (필수)**: 보고서 작성 전 `.claude/commands/invest/glossary.md`를 Read해 규칙을 적용한다. 영어를 한글 문장에 그대로 박지 말고(rotation → 순환매, breadth → 자금흐름 폭, risk-on/off → 위험선호/회피), 음차는 표준어 우선(로테이션 → 순환매).
 
 ### 🌐 시장분석 보고서: [섹터/테마명]
 
