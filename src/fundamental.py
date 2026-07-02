@@ -102,42 +102,44 @@ def analyze_fundamentals(ticker_symbol: str) -> dict:
     operating_income = _get_latest_value(income_stmt, ["Operating Income", "EBIT"])
     net_income = _get_latest_value(income_stmt, ["Net Income", "Net Income Common Stockholders"])
 
-    operating_margin = _safe_round(operating_income / revenue * 100) if revenue and operating_income else _safe_round(_safe_get(info, "operatingMargins", None), 2)
-    if operating_margin and _safe_get(info, "operatingMargins") and operating_margin == _safe_round(_safe_get(info, "operatingMargins"), 2):
-        operating_margin = _safe_round(operating_margin * 100)
+    # 재무제표 기반 마진 우선, 실패 시 info['operatingMargins'] 폴백 (소수 형태 → 무조건 ×100)
+    operating_margin = _safe_round(operating_income / revenue * 100) if revenue and operating_income else None
+    if operating_margin is None:
+        om_raw = _safe_get(info, "operatingMargins")
+        operating_margin = _safe_round(om_raw * 100) if om_raw is not None else None
 
     net_margin = _safe_round(net_income / revenue * 100) if revenue and net_income else None
+
+    # yfinance info의 ROE/ROA는 항상 소수 형태 (0.15 = 15%) → 조건 없는 ×100
+    # (abs<10 휴리스틱은 근소자본 ROE 1,000%+ 케이스를 100배 축소해 제거)
+    roe_raw = _safe_get(info, "returnOnEquity")
+    roa_raw = _safe_get(info, "returnOnAssets")
 
     profitability = {
         "revenue": revenue,
         "operating_income": operating_income,
         "net_income": net_income,
-        "operating_margin_pct": _safe_round(operating_income / revenue * 100) if revenue and operating_income else None,
+        "operating_margin_pct": operating_margin,
         "net_margin_pct": net_margin,
-        "roe_pct": _safe_round(_safe_get(info, "returnOnEquity", None), 4),
-        "roa_pct": _safe_round(_safe_get(info, "returnOnAssets", None), 4),
+        "roe_pct": _safe_round(roe_raw * 100) if roe_raw is not None else None,
+        "roa_pct": _safe_round(roa_raw * 100) if roa_raw is not None else None,
     }
-    # yfinance의 ROE/ROA는 소수 형태 (0.15 = 15%) → 퍼센트로 변환
-    if profitability["roe_pct"] is not None and abs(profitability["roe_pct"]) < 10:
-        profitability["roe_pct"] = _safe_round(profitability["roe_pct"] * 100)
-    if profitability["roa_pct"] is not None and abs(profitability["roa_pct"]) < 10:
-        profitability["roa_pct"] = _safe_round(profitability["roa_pct"] * 100)
 
     # --- 성장성 ---
     prev_revenue = _get_prev_value(income_stmt, ["Total Revenue", "Revenue"])
     prev_net_income = _get_prev_value(income_stmt, ["Net Income", "Net Income Common Stockholders"])
 
+    # yfinance info의 성장률도 항상 소수 형태 → 조건 없는 ×100
+    # (abs<10 휴리스틱은 흑자전환 1,200% 성장을 '12%'로 축소 — J커브 종목에서 정확히 터져 제거)
+    eg_raw = _safe_get(info, "earningsGrowth")
+    rg_raw = _safe_get(info, "revenueGrowth")
+
     growth = {
         "revenue_growth_pct": _calc_growth_rate(revenue, prev_revenue),
         "net_income_growth_pct": _calc_growth_rate(net_income, prev_net_income),
-        "earnings_growth_pct": _safe_round(_safe_get(info, "earningsGrowth", None), 4),
-        "revenue_growth_yf_pct": _safe_round(_safe_get(info, "revenueGrowth", None), 4),
+        "earnings_growth_pct": _safe_round(eg_raw * 100) if eg_raw is not None else None,
+        "revenue_growth_yf_pct": _safe_round(rg_raw * 100) if rg_raw is not None else None,
     }
-    # 소수 → 퍼센트 변환
-    if growth["earnings_growth_pct"] is not None and abs(growth["earnings_growth_pct"]) < 10:
-        growth["earnings_growth_pct"] = _safe_round(growth["earnings_growth_pct"] * 100)
-    if growth["revenue_growth_yf_pct"] is not None and abs(growth["revenue_growth_yf_pct"]) < 10:
-        growth["revenue_growth_yf_pct"] = _safe_round(growth["revenue_growth_yf_pct"] * 100)
 
     # --- 재무 건전성 ---
     total_debt = _get_latest_value(balance_sheet, ["Total Debt", "Long Term Debt"])
@@ -169,7 +171,7 @@ def analyze_fundamentals(ticker_symbol: str) -> dict:
 
     fcf = None
     if operating_cf is not None and capex is not None:
-        fcf = operating_cf + capex  # capex는 보통 음수
+        fcf = operating_cf - abs(capex)  # capex 부호 방어(양수로 와도 차감) — valuation.py와 통일
     elif _safe_get(info, "freeCashflow"):
         fcf = _safe_get(info, "freeCashflow")
 
@@ -328,11 +330,9 @@ def analyze_fundamentals(ticker_symbol: str) -> dict:
 
     # --- 추가 비율 ---
     quick_ratio = _safe_get(info, "quickRatio")
-    ebitda_margins = _safe_get(info, "ebitdaMargins")
-    if ebitda_margins and abs(ebitda_margins) < 10:
-        ebitda_margins = _safe_round(ebitda_margins * 100)
-    else:
-        ebitda_margins = _safe_round(ebitda_margins)
+    # yfinance info의 ebitdaMargins도 항상 소수 형태 → 조건 없는 ×100 (abs<10 휴리스틱 제거)
+    ebitda_raw = _safe_get(info, "ebitdaMargins")
+    ebitda_margins = _safe_round(ebitda_raw * 100) if ebitda_raw is not None else None
 
     total_assets_val = _get_latest_value(balance_sheet, ["Total Assets"])
     asset_turnover_ratio = _safe_round(revenue / total_assets_val) if revenue and total_assets_val and total_assets_val > 0 else None

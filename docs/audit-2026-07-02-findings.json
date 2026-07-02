@@ -1,0 +1,869 @@
+{
+ "raw_findings": [
+  {
+   "title": "breakout_buy가 '돌파' 여부를 전혀 확인하지 않아 고점 부근 대량 매도일(distribution day)을 '신고가 돌파 매수 셋업'으로 판정한다",
+   "file": "src/tools/momentum.py:49",
+   "severity": "high",
+   "category": "bug",
+   "detail": "`breakout_buy = bool(pct_from_high is not None and pct_from_high >= -3 and vol_surge and vol_surge >= 1.3)` — 조건이 (1) 52주 고점 -3% 이내, (2) 당일 거래량 20일 평균 1.3배뿐이다. 당일 등락 방향·신고가 경신 여부를 보지 않는다. 예: 어제 52주 고점 100 기록 후 오늘 99→97로 -2.5% 급락 + 거래량 2배(전형적 분산 신호)면 pct_from_high=-3.0, vol_surge=2.0으로 breakout_buy=True가 되고, 출력 interpretation은 \"신고가 돌파 + 거래량 동반 — 추세추종 진입/피라미딩 적합\"(112-113행)이 된다. 대량 매도 반전일에 피라미딩을 권하는 정반대 시그널 — 공격 모멘텀 전략의 핵심 진입 트리거가 최악의 타이밍에 발화한다. momentum_score에도 15점이 잘못 가산된다(91-92행).",
+   "fix": "돌파 판정에 (a) 당일 종가 > 전일까지의 52주 고점(실제 신고가 경신) 또는 최소한 당일 수익률 > 0 조건, (b) 당일 캔들이 양봉인지 확인을 추가. 예: `today_up = close.iloc[-1] > close.iloc[-2]`, `new_high = cur >= float(close.iloc[:-1].max())`를 and 조건으로 결합하고, 근접(-3% 이내)만 한 경우는 'breakout_watch'로 별도 표기."
+  },
+  {
+   "title": "technical 기본 period=6mo라서 SMA200·장기 골든크로스가 항상 N/A이고, '52주 고점/저점' 피보나치가 실제로는 6개월 범위다",
+   "file": "src/technical.py:249",
+   "severity": "high",
+   "category": "bug",
+   "detail": "cli.py:85가 `analyze_technical(ticker)`를 기본 period='6mo'(약 126거래일)로 호출한다. (1) 160-161행 `if len(close) >= 200` 조건으로 sma_200은 항상 None → price_vs_sma200 항상 None, ma_crossover 항상 'N/A (데이터 부족)', trend_confirmed(366-371행)의 `sma_200 is None or sma_50 > sma_200`이 항상 통과해 200일선 붕괴 종목도 '추세 확인'되어 과매수 매도신호가 매수로 재해석될 수 있다. (2) 249-250행 `high_52w = float(high.max()) if len(high) >= 200 else float(high.max())`는 양쪽 분기가 동일한 죽은 조건문으로, 'high_52w/low_52w'라는 이름으로 6개월 고점/저점을 보고한다 → 피보나치 지지/저항 레벨 전체가 잘못된 범위 기준이고, 에이전트가 '52주 신고가 근접'을 오판한다.",
+   "fix": "analyze_technical 기본 period를 '1y'로 변경(또는 cli.py에서 '1y' 명시). 6mo를 유지하려면 52주 범위·SMA200용으로 별도 1y 데이터를 받아 계산하고, 데이터가 200봉 미만이면 필드명을 high_period/low_period로 바꾸거나 'N/A' 처리."
+  },
+  {
+   "title": "벤치마크 조회 실패 시 조용히 RS 25점이 통째로 0 처리되어 momentum_score·등급이 왜곡된다",
+   "file": "src/tools/momentum.py:73",
+   "severity": "high",
+   "category": "robustness",
+   "detail": "64-74행 벤치마크 루프가 `except Exception: pass`로 실패를 삼키고, 82-84행에서 `relative_strength.get('SPY', {}).get('excess_return_3m_pct')`가 None이면 25점 만점 구간이 그냥 0점이 된다. yfinance 일시 장애/레이트리밋 시 SPY를 크게 이기는 종목도 최대 75점으로 캡되어 '🟢 강함'(≥70)이 '🟡 보통'으로 강등되고, 출력 어디에도 '벤치마크 조회 실패'가 표시되지 않아 에이전트는 이를 실제 모멘텀 약화로 해석한다. 진입/관망 판단(interpretation 112-117행)이 데이터 장애로 뒤집힌다.",
+   "fix": "벤치마크 실패 시 결과에 `benchmark_errors` 필드를 추가하고, RS 컴포넌트가 결측이면 momentum_score를 0~100이 아닌 가용 컴포넌트 기준으로 재정규화(score/available_max*100)하거나 `score_incomplete: true` 플래그를 명시."
+  },
+  {
+   "title": "상장 30~62거래일 신규 종목은 3M 수익·RS가 None→0점 처리되어 강한 신규 주도주가 '모멘텀 약함'으로 오판된다",
+   "file": "src/tools/momentum.py:79",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "최소 요구가 30거래일(24-25행)인데, momentum_score의 50점(3M 절대수익 25 + SPY RS 25)은 63거래일 이상이어야 계산된다(_ret_pct가 `len(series) <= days`면 None, 12-14행). 상장 40일차에 +80% 간 IPO 주도주도 이 50점이 조용히 0이 되어 최대 50점 → '🔴 약함' 또는 '🟡 보통' 판정. 공격 전략에서 가장 알파가 큰 신규 상장 모멘텀주(과거 사례: 신규 테마주 초기 구간)를 시스템이 구조적으로 걸러낸다. 결측과 '실제로 약함'이 출력에서 구분되지 않는다.",
+   "fix": "가용 기간 기준으로 폴백(예: 3M 미충족 시 1M 수익·상장 후 전체 수익으로 대체 계산)하고 `data_span_days` 필드와 함께 score를 가용 컴포넌트로 재정규화. 최소한 returns가 None인 컴포넌트 수를 `score_note`로 노출."
+  },
+  {
+   "title": "sector_scan은 '자금흐름'을 표방하지만 실제로는 가격 모멘텀만 측정하며, 계산해 놓은 1M 수익률을 점수에 쓰지 않아 롤오버된 테마가 계속 🟢로 랭크된다",
+   "file": "src/tools/sector_scan.py:39",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "점수(39-49행)는 3M수익(40)+3M RS(40)+50MA(10)+200MA(10) — 거래량·AUM·자금유출입 프록시가 전혀 없는데 출력 rating은 '🟢 자금유입/🔴 자금이탈'로 라벨링되고(53-57행) CLAUDE.md·docstring도 '자금흐름 랭킹'으로 판다. 에이전트가 가격 상승을 '자금 유입 증거'로 잘못 인용하게 된다. 또 r1(1M)은 계산만 하고(32행) 가중치가 0이라, 3개월 전 급등 후 최근 1개월 -15% 꺾인 테마도 3M 수익이 남아 있는 동안 상위 랭크 + 🟢을 유지한다 — 모멘텀 로테이션에서 가장 비싼 실수(꺾인 테마 추격)를 유도한다.",
+   "fix": "(1) 점수에 1M 수익 또는 1M RS 컴포넌트(예: 15~20점)를 넣고 1M RS가 음수면 rating을 🟢에서 강등. (2) 대표 ETF의 거래량 추이(20일 vs 60일 평균 달러거래대금)라도 넣어 '자금흐름' 라벨을 뒷받침하거나, 라벨을 '가격 모멘텀'으로 정정."
+  },
+  {
+   "title": "SPY 조회 실패 시 모든 테마의 RS 40점이 조용히 소멸해 랭킹이 절대수익 순으로 변질된다",
+   "file": "src/tools/sector_scan.py:79",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "79-82행에서 SPY 조회 실패 시 `spy_3m = None`으로만 두고 계속 진행한다. 그러면 모든 테마의 rs_spy가 None(37행) → 40점 만점 구간이 전부 0점, 점수 스케일이 사실상 0~60으로 붕괴하고 🟢 판정(rs_spy>5 필요, 52행)이 불가능해져 전 테마가 🟡/🔴로 나온다. 출력에 spy_3m_return_pct: null이 있긴 하나 에러 사유가 없어, market 스킬이 '자금유입 섹터 없음(리스크오프)'으로 오독할 수 있다.",
+   "fix": "SPY 실패 시 결과에 `warning: 'SPY 벤치마크 조회 실패 — RS/rating 무효'`를 명시하고 rating을 전부 'N/A'로 표기하거나, 점수를 RS 제외 컴포넌트 기준으로 재정규화."
+  },
+  {
+   "title": "장중 실행 시 당일 미완성 봉의 부분 거래량으로 vol_surge/vol_ratio가 과소평가되어 돌파·거래량 시그널을 놓친다",
+   "file": "src/tools/momentum.py:46",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "yfinance history의 마지막 행은 장중이면 당일 부분 봉이다. momentum.py:46 `vol.iloc[-1] / vol_20`, technical.py:206 `volume_series.iloc[-1] / vol_10d` 모두 당일 누적(부분) 거래량을 완성일 평균과 나눈다. 예: 장 개시 2시간 후 실행하면 실제로 2배 거래량 폭증 중인 돌파일도 vol_surge≈0.5로 나와 breakout_buy=False, 기술적 volume signal 중립. 사용자(KST)가 미국 프리장~장중에 분석을 돌리는 경우 신고가 돌파 당일 진입 시그널이 체계적으로 억제된다 — 돌파 추격이 전략의 핵심인데 가장 중요한 날 신호가 꺼진다. 반대로 장 마감 직후엔 정상이라 결과가 실행 시각에 따라 비결정적이다.",
+   "fix": "마지막 봉이 당일(미완성)인지 확인해 (a) 거래량을 경과 시간 비율로 연율화(intraday run-rate)하거나 (b) 완성된 전일 봉 기준으로 계산하고 출력에 `bar_status: partial/complete`를 명시."
+  },
+  {
+   "title": "상장 30거래일 미만 신규 테마 ETF가 errors에도 안 잡히고 랭킹에서 조용히 사라진다",
+   "file": "src/tools/sector_scan.py:28",
+   "severity": "low",
+   "category": "robustness",
+   "detail": "`if df.empty or len(df) < 30: return None`(28-29행) — None 반환은 rows에 추가되지 않고(88-90행) errors 리스트에도 없어, 신규 상장 테마 ETF(뜨는 테마일수록 신규 ETF가 많음)가 스캔 결과에서 무단 누락된다. 발굴 엔진이 가장 새로운 테마를 구조적으로 못 본다. 또 <200일 ETF는 above_200=None으로 10점을 영구 상실(46-48행)해 신생 테마에 랭킹 페널티가 있다.",
+   "fix": "데이터 부족 시 `{'name':..., 'error': 'insufficient history (<30 bars)'}`를 반환해 errors에 노출하고, 200MA 결측 시 해당 10점을 제외한 90점 만점으로 재정규화."
+  },
+  {
+   "title": "OBV 추세를 '거래량 증가/감소'로 해석하는 문구가 틀려 에이전트가 잘못된 근거를 보고서에 인용한다",
+   "file": "src/technical.py:220",
+   "severity": "low",
+   "category": "bug",
+   "detail": "220-226행 volume_confirmation이 OBV 5일 변화를 '거래량 증가/감소'로 서술한다(예: '가격 상승 + 거래량 증가 = 강세 확인'). OBV 상승은 상승일 거래량 우위를 뜻하지 총 거래량 증가가 아니다. 실제로 거래량이 말라가며 오르는 종목(상승 약화 경고 대상)도 상승일 우위면 OBV가 올라 '거래량 증가 = 강세 확인'으로 출력된다. 에이전트 소통 규칙상 이 문구가 근거(evidence)로 메모·보고서에 그대로 인용되어 수급 판단을 오도한다.",
+   "fix": "문구를 'OBV 상승(매수 거래량 우위)'/'OBV 하락(매도 거래량 우위)'으로 정정하고, 실제 거래량 증감은 vol_ratio/avg_10d vs avg_50d로 별도 서술."
+  },
+  {
+   "title": "MACD 히스토그램을 소수 2자리로 반올림한 뒤 부호 판정해 저가주에서 시그널이 항상 중립이 된다",
+   "file": "src/technical.py:122",
+   "severity": "low",
+   "category": "bug",
+   "detail": "108행에서 `histogram = _safe_round(macd_indicator.macd_diff().iloc[-1])`(2자리 반올림) 후 122행 `\"매수\" if histogram and histogram > 0 ...`로 판정한다. 주가 $1 미만 종목(투기적 저가 모멘텀주 포함)은 히스토그램 절대값이 0.005 미만인 경우가 흔해 0.0으로 반올림 → falsy → 항상 '중립'. 종합점수(±3 임계)에서 MACD 표가 사라져 저가주 시그널이 체계적으로 약화된다. 같은 truthiness 패턴이 stoch_k==0(극단 과매도, 334행)·rsi==0에도 있어 극단값이 '중립 구간'으로 표기된다.",
+   "fix": "판정은 반올림 전 원시값으로 수행(`raw_hist = macd_indicator.macd_diff().iloc[-1]`)하고 표시용만 반올림. truthiness 검사는 `is not None` 비교로 교체."
+  },
+  {
+   "title": "debtToEquity 단위 휴리스틱이 저부채 기업을 mandate 위반으로 오판 (D/E < 0.10x 기업이 게이트 탈락)",
+   "file": "src/tools/risk_analyzer.py:529",
+   "severity": "high",
+   "category": "bug",
+   "detail": "`de_multiple = debt_to_equity / 100 if debt_to_equity >= 10 else debt_to_equity` — yfinance의 debtToEquity는 항상 %표기(예: 145.6 = 1.46x)다. 부채가 거의 없는 기업(D/E 3~9%, yfinance 값 3~9)은 10 미만이라 '이미 배수'로 간주되어 3~9x로 100배 뻥튀기된다. default 게이트(max 3.0x)·megatrend 게이트(5.0x)를 현금부자 저부채 기업이 탈락 → overall_compliant=False. 무부채에 가까운 강한 모멘텀 종목이 mandate-check에서 부채위반으로 찍혀 위원회가 비중을 깎거나 회피하는 정반대 판단을 유발한다. 반대로 진짜 D/E 12x 초레버리지 기업(yfinance 1200)은 12x로 정확히 계산돼 비대칭적으로 저부채만 처벌한다.",
+   "fix": "yfinance debtToEquity는 항상 %형이므로 무조건 /100 적용. 검증이 필요하면 balance_sheet의 totalDebt/총자본으로 직접 계산해 교차확인하고, 10 미만 값을 '배수'로 재해석하는 분기 삭제."
+  },
+  {
+   "title": "수정됐다고 기록된 시나리오 Kelly(calc_scenario_kelly)가 CLI에서 도달 불가 — 에이전트는 여전히 결함 있는 노이즈 Kelly만 받음",
+   "file": "src/tools/cli.py:103",
+   "severity": "high",
+   "category": "consistency",
+   "detail": "risk_analyzer.py:44 calc_scenario_kelly는 구현되어 있으나(수식 자체는 f*=E[r]/Var로 타당, 기대수익 음수 시 avoid 신호도 정상), cli.py cmd_risk(103-107행)와 risk 서브커맨드 파서(315-325행)에 --scenarios 옵션이 없어 scenarios 인자가 영원히 None이다. risk-officer.md 86-89행은 '시나리오 기반 Kelly로 교차검증'을 지시하지만 에이전트가 쓰는 유일한 진입점(`cli.py risk`)으로는 불가능 → 항상 일별 노이즈 Kelly(기대수익 미반영, 244-257행)만 출력된다. 메모리에 '수정 완료'로 기록된 결함이 실제 워크플로에서는 미배포 상태. 참고: 스트레스 테스트 -100% 클램프(308-309행)는 실제 수정 확인됨.",
+   "fix": "cli.py risk에 `--scenarios '[{\"prob\":0.35,\"return_pct\":80},...]'` (또는 --scenarios-stdin) 옵션을 추가해 analyze_risk(scenarios=...)로 연결하고, risk-officer.md의 실행 예시에 Bull/Base/Bear 확률·수익률 전달법을 명시."
+  },
+  {
+   "title": "크립토 자산에 252일 연율화 계수 적용 — 연변동성 17% 과소, 리스크 등급·샤프 왜곡",
+   "file": "src/tools/risk_analyzer.py:127",
+   "severity": "high",
+   "category": "bug",
+   "detail": "크립토는 365일 거래라 yfinance 일봉이 연 365개인데 `annual_volatility = daily_volatility * np.sqrt(252)`(127행)와 `mean_annual_return = mean * 252`(159행)를 그대로 쓴다. 연변동성은 sqrt(252/365)≈0.83배로 과소(예: 알트 일변동 3.5% → 55.6%로 보고, 실제 66.9%), _risk_level의 0.6 임계(389행)를 넘어야 할 자산이 '중간'으로 강등될 수 있다. 연수익률은 252/365≈0.69배로 과소 → 샤프/소르티노도 왜곡. 함수 내에서 is_crypto를 이미 판정(202행)하면서 연율화에는 반영하지 않는다. 크립토 mandate(20% 공격 사이징)의 변동성·샤프 근거 수치가 체계적으로 틀린 채 위원회에 전달된다.",
+   "fix": "ticker.info 조회를 변동성 계산 앞으로 이동해 `periods = 365 if is_crypto else 252`로 연율화(변동성 sqrt(periods), 평균수익 ×periods)하고, 출력에 annualization_basis를 명시."
+  },
+  {
+   "title": "mandate 프로파일 오타 시 조용히 default로 폴백하면서 출력엔 요청한 프로파일명을 그대로 표기",
+   "file": "src/tools/risk_analyzer.py:35",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "_load_mandate가 FileNotFoundError 시 default.json으로 조용히 폴백(35-41행)하고, position_sizing에는 `\"mandate_profile\": mandate_profile`(290행)로 사용자가 요청한 문자열이 그대로 실린다. 예: `--mandate megatrande`(오타) → 실제 적용은 default(최대 10%, moderate)인데 출력 라벨은 'megatrande' → 에이전트는 공격 프로파일이 적용됐다고 믿고 10% 천장 기준 비중을 보고한다(공격 베팅이 절반 이하로 잘림). setup 미실행으로 default.json도 없으면 {} → max 10%/moderate가 무경고로 적용된다. check_mandate는 빈 mandate에 error를 반환(431-432행)하지만 analyze_risk는 하지 않는 비대칭도 존재.",
+   "fix": "폴백 발생 시 결과에 `mandate_fallback: requested→actual` 필드와 soft_warning을 추가하거나, 존재하지 않는 프로파일명은 ValueError로 즉시 실패시킬 것."
+  },
+  {
+   "title": "권고 비중 × 손절폭의 '실제 자본 리스크'를 교차검증하지 않음 — 25% 비중 + 20% 스톱 = 트레이드당 자본 5% 손실인데 무경고",
+   "file": "src/tools/risk_analyzer.py:280",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "stop_loss_pct가 주어지면 risk_per_trade(1~2% 룰 사이즈)를 병기(280-287행)하지만, recommended_pct(확신도 가중, megatrend 최대 25%)와의 정합성 검사는 없다. soft_warnings는 VaR 참고상한(272-274행)과 Kelly avoid(276-277행)만 본다. 예: conviction 2.0 megatrend → recommended 25%, --stop-loss-pct 20 → 손절 발동 시 자본 -5%인데 경고 zero. 연 100%+ 목표의 핵심 규율이 '손절 기반 과감한 집중'인 만큼, 트레이드당 자본 리스크가 예산(1~2%)의 몇 배인지가 가장 중요한 단일 경고인데 빠져 있다. 서너 번 연속 손절이면 -15~20% 드로다운으로 복리 기반이 무너진다.",
+   "fix": "implied_capital_risk_pct = recommended_pct × stop_loss_pct / 100을 계산해 출력하고, 2%(또는 mandate별 risk budget) 초과 시 soft_warning으로 '비중 축소 또는 스톱 타이트닝' 택일을 강제 제시."
+  },
+  {
+   "title": "소르티노 하방편차 수식 오류 — 손실 수익률의 자기평균 대비 표준편차를 사용 (LPM2 아님)",
+   "file": "src/tools/risk_analyzer.py:171",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "`downside_std = daily_returns[daily_returns < 0].std() * sqrt(252)`(171-172행)는 (a) 음수 수익률만 뽑아 (b) 그들 자신의 평균 둘레 분산을 재는데, 올바른 하방편차는 전체 관측치에 대해 sqrt(mean(min(r-target,0)^2))이다. 결과: 매일 꾸준히 -0.5%씩 빠지는 자산은 손실 분산이 거의 0이라 downside_std≈0 → 소르티노가 발산(부호 불안정)하고, 드물지만 편차 큰 손실을 가진 건강한 모멘텀 종목은 과대 처벌된다. '우수/부진' 해석 라벨(363-369행)이 이 값으로 찍혀 위원회 보고서에 실린다.",
+   "fix": "downside = np.minimum(daily_returns, 0.0); downside_dev = sqrt((downside**2).mean()) * sqrt(periods) 로 교체 (분모는 전체 n)."
+  },
+  {
+   "title": "marketCap 누락 시 최소 시총 게이트가 조용히 스킵되어 overall_compliant=True — 크립토 $1B 러그 방지선 무력화",
+   "file": "src/tools/risk_analyzer.py:441",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "`if market_cap and min_cap:`(441행) — yfinance info에 marketCap이 없으면(저유동 알트·일부 소형주·info 부분 실패) 체크 자체가 checks 리스트에 추가되지 않고 all_pass에 영향 없이 통과한다. crypto mandate의 min_market_cap_usd $1B은 명시적으로 '저유동·러그 위험 회피'용인데, 정확히 그런 자산일수록 데이터가 비어 게이트가 사라지는 역선택 구조다. 결과 JSON에 N/A 표기도 note도 없어 에이전트가 누락을 인지할 수 없다.",
+   "fix": "min_cap>0인데 market_cap이 None이면 checks에 {passed: None, actual: 'N/A'}로 명시하고 notes에 '시총 확인 불가 — 저유동/러그 스크린 미수행' 경고 추가 (크립토는 cli.py crypto의 CoinGecko 시총으로 폴백)."
+  },
+  {
+   "title": "베타 계산의 ddof 불일치 — 표본공분산(ddof=1) ÷ 모분산(ddof=0)",
+   "file": "src/tools/risk_analyzer.py:151",
+   "severity": "low",
+   "category": "bug",
+   "detail": "`np.cov(stock_r, market_r)[0][1]`은 기본 ddof=1(표본), `np.var(market_r)`은 기본 ddof=0(모집단)이라 베타가 n/(n-1)배(1y 기준 약 +0.4%) 상향 편향된다. 크기는 작지만 이 베타가 스트레스 테스트 손실률(308행)에 직접 곱해지고, 과거 이슈로 기록된 'risk vs valuation 베타 불일치'의 잔여 원인 중 하나다.",
+   "fix": "market_variance = np.var(market_r, ddof=1) 로 통일 (또는 cov 행렬의 [1][1] 원소 사용)."
+  },
+  {
+   "title": "entry_mode 오타 시 조용히 accumulate(0.5x)로 폴백 — 돌파 추격 진입이 절반 사이즈로 축소",
+   "file": "src/tools/risk_analyzer.py:267",
+   "severity": "low",
+   "category": "robustness",
+   "detail": "`entry_factor = {...}.get(entry_mode, 0.5)`(267행) — CLI가 --entry-mode 문자열을 검증 없이 전달(cli.py:324)하므로 'break-out', 'Breakout' 같은 오타·대문자는 무경고로 0.5(분할)로 떨어진다. 돌파 시점의 1회 진입 비중이 의도(0.8x)의 62.5%로 줄어 모멘텀 진입 타이밍 알파를 깎지만, 출력의 entry_mode 필드에는 오타 문자열이 그대로 실려 에이전트가 눈치채기 어렵다.",
+   "fix": "허용 집합(breakout/accumulate/full) 외 입력은 ValueError 또는 soft_warning + 정규화(lower/strip) 후 매칭."
+  },
+  {
+   "title": "price_range_52w가 period 인자에 종속되고 종가만 사용 — '52주' 라벨과 불일치",
+   "file": "src/tools/risk_analyzer.py:165",
+   "severity": "low",
+   "category": "bug",
+   "detail": "high_52w/low_52w를 `close.max()/min()`(165-166행)으로 계산 — (a) period가 '6mo'나 '2y'로 호출되면 여전히 'price_range_52w'로 보고되어 6개월 또는 2년 레인지가 52주로 오인되고, (b) 일중 고저(High/Low 컬럼)가 아닌 종가만 써서 실제 52주 고점 대비 위치(position_pct)가 과대·과소될 수 있다. 신고가 돌파 판단(모멘텀 진입 트리거)에 쓰이면 돌파 오탐 가능.",
+   "fix": "df['High'].max()/df['Low'].min() 사용 + period != '1y'면 키를 price_range_period로 바꾸거나 별도로 1y 데이터를 조회해 52주 레인지를 고정 산출."
+  },
+  {
+   "title": "과거 추천의 승률·수익률을 검증하는 피드백 루프가 전혀 없다 — 메모는 쌓이지만 시스템은 학습하지 않는다",
+   "file": "src/tools/memo_manager.py",
+   "severity": "critical",
+   "category": "alpha-gap",
+   "detail": "memo_manager.py의 공개 기능은 write/write_report/read/list/search/migrate뿐이고(cli.py:249-277 디스패치도 동일), 메모 템플릿에는 목표가·초기손절가·트레일링 규칙·손익비·시나리오 확률이 규격 필드로 기록되지만(memo_manager.py:83-111) 이 예측을 이후 실제 주가와 대조하는 도구가 레포 어디에도 없다. knowledge-agent는 같은 티커 재분석 때 과거 메모를 읽을 뿐이다. 결과: conviction(0.5-2.0)·시나리오 확률·momentum_score 가중치가 맞았는지 틀렸는지 아무도 모른 채 다음 분석에 재사용된다. 연 100%는 '어떤 신호가 실제로 돈을 벌었나'를 측정해 사이징에 되먹임해야 나오는 수치인데, 현재 구조는 예측 생산만 있고 채점이 0이다.",
+   "fix": "cli.py에 `track` 커맨드 신설: data/histories/*/summary.md에서 (작성일, 결정, 진입가, 목표가, 손절가, 시나리오 확률)을 파싱하고 yfinance로 이후 1/3/6개월 수익률·손절 터치 여부를 계산 → 티커별 R-multiple, 결정 카테고리별 승률, Bull/Base/Bear 확률 캘리브레이션(예: 'Bull 40%라 했던 건 중 실제 Bull 도달 18%')을 JSON으로 출력. 분기 1회 `/invest:review` 스킬로 이 결과를 읽어 conviction 산출 규칙·momentum 임계값을 갱신하는 절차를 stock.md에 명문화."
+  },
+  {
+   "title": "손절·트레일링 스톱이 '메모의 문장'으로만 존재 — 포트폴리오에 스톱이 저장되지도, 체크되지도 않는다",
+   "file": "src/tools/portfolio.py:106",
+   "severity": "critical",
+   "category": "alpha-gap",
+   "detail": "투자철학의 전제가 '손절 규율 기반의 과감한 집중'인데, portfolio.md 스키마는 `종목|수량|매입가|통화|매입시환율` 5개 컬럼뿐(portfolio.py:106-108)이고 analyze_portfolio(346-431행)는 평가액·손익·비중만 계산한다. 메모에 기록된 초기손절가·트레일링 규칙(예: '20일선 종가 이탈 시 청산')을 현재가와 대조하는 코드가 0줄이다. /invest:portfolio 평가 모드(D)도 손익 테이블만 보여준다. 즉 -30% 깨진 포지션과 정상 포지션이 같은 표에 나란히 찍힐 뿐 '지금 손절선 위반'이라는 판정이 시스템 어디서도 나오지 않는다. 집중 베팅(megatrend 최대 25%)에 스톱 미집행이 결합되면 한 종목이 연간 수익을 통째로 지운다 — 공격 전략에서 가장 치명적인 결손.",
+   "fix": "portfolio.md에 손절가·트레일링규칙·목표가·진입일 컬럼 추가(add CLI에 --stop/--target 옵션). `cli.py portfolio check` 신설: 종목별 (현재가 vs 손절가 거리 %, 트레일링 규칙 위반 여부[20일선/직전고점-X% 계산], 목표가 도달, 신고가 갱신=피라미딩 트리거)를 판정해 🔴위반/🟡근접 리스트를 출력. /invest:portfolio 모드 D와 마무리 절차에서 이 체크를 필수 실행으로 명시."
+  },
+  {
+   "title": "돌파·손절 트리거를 감시하는 상시 장치가 없다 — 전 시스템이 사용자가 물어야만 도는 온디맨드 구조",
+   "file": "src/tools/cli.py:280",
+   "severity": "high",
+   "category": "alpha-gap",
+   "detail": "cli.py main() 디스패치(280-403행) 전체에 watch/alert/monitor 계열 커맨드가 없고, 스킬 8종도 모두 사용자 발화로만 트리거된다. 그런데 시스템이 뽑는 신호는 시간 민감형이다 — momentum.py의 breakout_buy_setup(52주 고점 -3% 이내 + 거래량 1.3x, 49행)은 당일 포착해야 의미 있고, stock.md가 요구하는 피라미딩 트리거·카탈리스트 캘린더(D-day)도 날짜 기반이다. 사용자가 우연히 그날 분석을 돌리지 않으면 진입·청산 타이밍을 구조적으로 놓친다. 모멘텀 전략의 알파 상당분은 분석 품질이 아니라 트리거 당일 실행에서 나온다.",
+   "fix": "`cli.py watch` 신설: data/watchlist.md(관심종목+트리거 조건) + 보유종목을 일괄 순회하며 돌파 셋업 점화, 손절/트레일링 위반(2번 fix 재사용), 실적 D-7/D-1, 언락·카탈리스트 날짜를 점검해 알림 JSON을 출력. 이를 cron(호스트의 schedule/CronCreate)이나 GitHub Actions로 장 마감 후 1일 1회 자동 실행하고 결과를 data/alerts/에 append — 다음 대화 시작 시 knowledge-agent가 우선 읽도록 CLAUDE.md에 규약 추가."
+  },
+  {
+   "title": "포트폴리오 레벨 상관·클러스터·동시낙폭 도구 부재 — 종목별 리스크만 있고 '테마 하나가 꺾이면 다 같이 죽는' 구조를 못 본다",
+   "file": "src/tools/portfolio.py:346",
+   "severity": "high",
+   "category": "alpha-gap",
+   "detail": "risk_analyzer.py의 상관분석은 단일 티커 vs SPY/QQQ/섹터ETF뿐(184-231행)이고, analyze_portfolio는 보유종목 간 상관행렬·테마 클러스터 합산·포트폴리오 VaR/베타/동시 스트레스를 전혀 계산하지 않는다. positions.md의 '집중도 메모(IREN 실효노출, 상위2 합산)'는 에이전트가 수기로 쓰는 문장이다(portfolio.md 스킬 64행). 실제로 메모리에 'IREN 사례: 클러스터 56%를 수동 발견'이 기록돼 있을 만큼 이미 터진 갭이다. megatrend mandate가 종목당 25%를 허용하고 AI·반도체/DC전력/디지털인프라 테마가 서로 겹치는 구조라, 상관 0.8+ 종목들로 단일 테마 실효노출 60-70%가 조용히 만들어진다 — 테마 역회전 한 번이 연간 목표를 지운다.",
+   "fix": "`cli.py portfolio risk` 신설: (a) 보유종목 일별수익률 상관행렬(6M), (b) theme_etf_map.themes_for_ticker()를 재사용한 테마 클러스터 합산 노출(직접보유+ETF 간접 포함), (c) 포트폴리오 가중 베타·VaR·-15%/-30% 동시 스트레스, (d) 클러스터 상한(예: 단일 테마 합산 40%) 초과 경고. /invest:stock의 risk-officer(T7) 프롬프트에 '신규 비중 권고 전 portfolio risk로 기존 클러스터 확인'을 필수 단계로 추가."
+  },
+  {
+   "title": "momentum_score·sector_scan 점수·레짐 분류가 한 번도 백테스트된 적 없는 수기 상수다",
+   "file": "src/tools/momentum.py:76",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "momentum_score 합성(momentum.py:76-93)은 '3M 수익 +30%=만점 25점, SPY 초과 +20%p=만점 25점, 고점근접 25점, 200일선 10점, 돌파 15점', sector_scan(sector_scan.py:39-49)은 '3M/25 ×40 + (RS+10)/25 ×40 + 이평 20' — 전부 근거 문서 없는 하드코딩 상수이고 레포에 백테스트 하니스가 없다(테스트 디렉토리 자체가 없음). 이 점수가 conviction→포지션 크기로 직결되므로(risk_analyzer.py:263-264), 미검증 신호가 곧바로 사이징 배수가 되는 구조다. 임계값이 틀려 있으면(예: 돌파 셋업의 -3%/1.3x 조합이 실제로는 승률이 낮은 구간) 시스템적으로 나쁜 진입에 큰 비중을 싣는다.",
+   "fix": "경량 백테스트 도구 추가(`cli.py backtest momentum --universe <테마멤버들> --period 5y`): 각 리밸런스 시점의 momentum_score 십분위별 이후 1/3개월 수익률을 집계해 단조성·IC를 출력. breakout_buy_setup은 트리거 후 승률/평균 R을 별도 리포트. 결과로 가중치·임계값을 캘리브레이션하고 산출 근거를 도구 docstring에 기록(1번 track 도구와 함께 '신호 → 실현수익' 검증 축 완성)."
+  },
+  {
+   "title": "매도 시 실현손익·보유기간이 어디에도 기록되지 않고 부분 매도도 불가 — 성과 데이터가 원천 소실된다",
+   "file": "src/tools/portfolio.py:265",
+   "severity": "high",
+   "category": "alpha-gap",
+   "detail": "remove_holding(265-278행)은 행을 지울 뿐 매도가·매도일·실현손익을 아무 데도 남기지 않으며, /invest:portfolio 모드 C도 '전량 매도 전제'(부분 매도는 add로 평단 덮어쓰기 — 이 경우 기존 매수 이력도 소실)다. positions.md에 '한 줄 메모'를 남기라는 지침이 있지만 비정형 문장이라 집계 불가. 즉 이 시스템은 자기 실제 트랙레코드(승률·평균 손익비·보유기간)를 계산할 원천 데이터를 만들지 않는다. 1번(피드백 루프)을 나중에 만들려 해도 과거 체결 데이터가 없어 복원 불가능해지는, 시간이 지날수록 커지는 손실이다.",
+   "fix": "`portfolio sell <TICKER> --qty N --price P [--fx]` 신설: 보유 수량 차감(전량이면 행 제거) + data/trades.md 체결 레저에 append(날짜·수량·매도가·실현손익 현지/KRW·보유기간·연결 메모 디렉토리). buy(add)도 동일 레저에 기록해 평단 덮어쓰기로 인한 이력 소실 제거. track 도구(1번)가 이 레저를 1차 소스로 사용."
+  },
+  {
+   "title": "매크로 레짐(공격/중립/방어)이 포지션 사이징에 연결되지 않는다 — 레짐별 총노출 조절 부재",
+   "file": "src/tools/risk_analyzer.py:263",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "/invest:macro는 자산배분 자세(공격/중립/방어)까지 산출하지만 이를 소비하는 코드가 없다. 사이징 공식은 `neutral_base(=mandate_max×0.5) × conviction`(risk_analyzer.py:262-268)으로 레짐 입력이 없고, /invest:stock 파이프라인(stock.md T0-T8)은 cli.py macro를 아예 호출하지 않는다(market-analyst의 WebSearch 금리 검색이 전부). 모멘텀 집중 전략의 최대 드로다운은 risk-off 전환기에 나오므로, 레짐과 무관하게 동일 사이징이면 2022년형 국면에서 25%×고베타 포지션들이 그대로 노출된다. 3단 하향식(macro→market→stock)이라는 설계 선언과 달리 실제 데이터 흐름은 상단에서 끊겨 있다.",
+   "fix": "cli.py risk에 `--regime risk_on|neutral|risk_off` 옵션 추가(neutral_base에 1.0/0.75/0.5 승수), stock.md risk-officer(T7) 프롬프트에 '`cli.py macro`의 risk-on/off 점수를 확인해 --regime을 전달'을 명시. 포트폴리오 총 그로스 노출 상한(예: risk_off 시 70%)도 mandate JSON에 필드로 추가."
+  },
+  {
+   "title": "시나리오 Kelly가 CLI로 도달 불가능한 죽은 코드 — risk-officer는 항상 참고용 노이즈 Kelly만 받는다",
+   "file": "src/tools/cli.py:103",
+   "severity": "medium",
+   "category": "consistency",
+   "detail": "analyze_risk는 scenarios 파라미터를 받아 비대칭 페이오프 기반 calc_scenario_kelly를 계산하도록 수정돼 있으나(risk_analyzer.py:92-98, 244-245 — 과거 'Kelly 기대수익 미반영' 결함의 수정본), cli.py cmd_risk(103-107)와 risk 디스패치(315-326)는 --scenarios 옵션을 노출하지 않고, stock.md risk-officer 프롬프트(204행)도 --conviction/--entry-mode/--stop-loss-pct만 지시한다. 결과적으로 실제 파이프라인에서는 항상 `noise_based_daily` Kelly(일별 수익률 빈도 기반, 미래 기대수익 무시)만 산출된다 — 메가트렌드형 비대칭 베팅(-15% vs +200%)에서 사이징 참고치가 체계적으로 왜곡되고, 고쳐둔 수식이 무용지물이다.",
+   "fix": "cli.py risk에 `--scenarios '[{\"prob\":0.3,\"return_pct\":120},...]'`(또는 --scenarios-stdin) 옵션 추가, stock.md T7 프롬프트에 'valuation-analyst의 Bear/Base/Bull 확률·수익률을 --scenarios로 전달'을 명시."
+  },
+  {
+   "title": "market.md가 '숏인터레스트'를 cli.py momentum 산출로 채우라고 지시하나 momentum 출력에 해당 필드가 없다",
+   "file": ".claude/commands/invest/market.md:240",
+   "severity": "medium",
+   "category": "consistency",
+   "detail": "market.md 종목 스캔 표(233행)에 '숏인터레스트' 컬럼이 있고 240행은 \"'RS·3M 모멘텀·52주 고점대비%·숏인터레스트'는 `cli.py momentum <T>` 산출 수치로 채움\"이라 지시하지만, momentum.py 반환 dict(97-118행)에는 short interest 관련 키가 전혀 없다(실제 데이터는 insider_analysis.py:176-190의 short_ratio/short_pct_float에만 존재). 에이전트는 지시대로 도구를 돌린 뒤 값이 없으니 N/A로 비우거나 — 더 나쁘게는 — 수치를 지어낼 위험이 있다. 숏인터레스트는 스퀴즈형 모멘텀 판단의 핵심 입력이라 빈칸/오염 둘 다 판단 품질을 깎는다.",
+   "fix": "택일: (a) market.md 240행을 '숏인터레스트는 `cli.py insider <T>`의 short_interest 블록으로 채움'으로 수정, 또는 (b) momentum.py 출력에 short_pct_float·days_to_cover를 추가(yfinance info 1회 조회)해 지시와 도구를 일치시킴 — 스퀴즈 신호를 momentum_score 문맥에 두는 (b) 권장."
+  },
+  {
+   "title": "sector_scan의 '🟢 자금유입' 라벨은 실제 자금흐름이 아니라 가격 상대모멘텀 — 프롬프트들이 이를 ETF 유출입으로 오독하게 만든다",
+   "file": "src/tools/sector_scan.py:51",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "rating 판정(51-57행)은 '3M RS>+5%p & 50일선 상회'라는 순수 가격 조건인데 라벨은 '자금유입/자금이탈'이고, market.md는 이 값을 '💵 유동성/자금 흐름(섹터 ETF 유출입)' 행의 근거로 인용하게 한다(207행). 거래량조차 반영되지 않으므로 얇은 거래의 숏스퀴즈성 랠리, 소수 대형주 주도 상승도 '자금유입'으로 찍힌다. 발굴 엔진의 1차 필터가 라벨 수준에서 과대 해석을 유도하면 하위 모든 판단(테마 선정→종목→conviction)이 같은 방향으로 물든다.",
+   "fix": "단기: 라벨을 '상대모멘텀 유입'으로 정정하고 rating_rule 문자열에 '가격 기반 프록시, 실제 flow 아님'을 명시 + market.md의 ETF 유출입 표현 분리. 중기: yfinance로 ETF sharesOutstanding 4주 변화(실제 창출/환매 프록시)와 거래대금 추세를 스코어에 추가."
+  },
+  {
+   "title": "무료 가격 데이터만으로 구성된 신호 스택 — 옵션 플로우·추정치 리비전 랭킹·13F 등 모멘텀 전략의 표준 엣지가 비어 있다",
+   "file": "src/tools/theme_etf_map.py",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "현재 신호원은 yfinance 가격/재무 + CoinGecko/DefiLlama가 전부다. earnings_calendar.py에 eps_trend(추정치 변동, 127-145행)가 이미 파싱돼 있지만 단일 종목 조회용일 뿐 유니버스 전체를 리비전 모멘텀으로 랭킹하는 스크리너가 없고(market.md는 에이전트에게 '집계해서 산출하라'고 프롬프트로만 요구), 숏인터레스트는 insider 도구에 고립돼 스캔 파이프라인과 미연결이며, 옵션 플로우(비정상 콜 매수·IV 스큐)와 13F 클러스터 매수는 소스 자체가 없다. 가격 모멘텀은 가장 붐비는 팩터라 그것만으로 연 100%를 지속하기 어렵고, 리비전·포지셔닝 데이터가 돌파의 진위(펀더멘털 동반 여부)를 가려주는 확인 신호다.",
+   "fix": "우선순위대로: (a) `cli.py revisions <테마>` — theme_members 각각의 eps_trend 7/30일 변화를 집계해 리비전 모멘텀 랭킹(기존 코드 재사용, 비용 0), (b) momentum 출력에 숏인터레스트 통합(9번과 동일), (c) SEC EDGAR 무료 API로 Form 4 클러스터 매수·13F 신규 편입 감지, (d) CBOE 무료 put/call 데이터로 과열 게이지."
+  },
+  {
+   "title": "메모 규격의 '후속 조치·카탈리스트 캘린더'가 실행 가능한 데이터가 아닌 산문으로 저장돼 어떤 도구도 소비할 수 없다",
+   "file": "src/tools/memo_manager.py:100",
+   "severity": "low",
+   "category": "robustness",
+   "detail": "MEMO_TEMPLATE의 카탈리스트 캘린더·후속 조치(100-115행)와 stock.md 13절(후속 조치 표)은 자유 서식 마크다운으로 저장된다. 날짜·조건이 구조화되지 않아 3번(watch)·1번(track) 같은 자동화 도구를 만들어도 파싱이 불안정하다 — '다음 보고서: 날짜 명시' 같은 슬롯이 실제로는 아무것도 트리거하지 않는 장식이 된다. 지금은 저비용이지만, 감시·추적 도구를 붙이는 순간 병목이 된다.",
+   "fix": "memo write의 stdin JSON에 machine-readable 블록 추가(예: `triggers: [{type: \"stop\", price: 42.0}, {type: \"earnings\", date: \"2026-08-07\"}, {type: \"review\", date: \"2026-10-01\"}]`)를 summary.md 하단에 YAML/JSON 코드블록으로 병기 저장 — 사람용 산문과 도구용 구조를 한 파일에 공존시켜 watch/track이 안정적으로 파싱하게 함."
+  },
+  {
+   "title": "DCF Phase-1(1~5년) 성장률을 yfinance revenueGrowth(최근 '단일 분기' YoY) 하나로 10년 외삽 — 내재가치·역내재 판정 전체가 한 분기 노이즈에 좌우된다",
+   "file": "src/tools/valuation.py:152-167",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "라인 154-157에서 `revenue_growth = info['revenueGrowth']`를 무조건 최우선 base_growth로 사용한다. 라이브 확인 결과(AAPL revenueGrowth=0.166) 이 필드는 최근 분기 매출의 YoY 성장률이다. 이 단일 분기 값이 Phase-1 5년 성장 + Phase-2 fade의 유일한 입력이 되어 10년 DCF와 `_implied_growth` 역내재 판정(라인 235-246)의 기준선까지 결정한다. 사이클 피크 분기(반도체·마이닝)면 내재가치가 수배 과대, 일시 부진 분기면 과소 → '고평가/저평가' 라벨이 반대로 나와 진입/회피 판단을 직접 왜곡한다. 민감도 매트릭스도 ±2%p만 흔들어(라인 215) 60% cap 종목의 실제 불확실성을 전혀 못 담는다.",
+   "fix": "성장률을 (a) 연간 재무제표 2~3년 CAGR, (b) revenueGrowth(분기 YoY), (c) 애널리스트 forward 컨센서스(`ticker.revenue_estimate`/`growth_estimates` — yfinance 1.2.0에서 사용 가능)의 블렌드로 산출하고, assumptions에 세 값을 모두 노출해 에이전트가 괴리를 보게 하라. 민감도 오프셋도 base_growth에 비례(예: ±25% 상대)로 확대."
+  },
+  {
+   "title": "피어 비교에서 음수 멀티플(forward P/E, P/B, EV/EBITDA)을 '가장 싸다=1위'로 랭킹하고 평균/중앙값에도 포함 — 상대가치 판정이 반대로 나온다",
+   "file": "src/tools/peer_comparison.py:196-229",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "lower-is-better 멀티플에서 음수 값을 필터링하지 않는다(라인 204: `values = [m[key] for m in all_metrics if m[key] is not None]`). 라이브 확인: RIVN forwardPE=-9.09 (Auto Manufacturers 피어), LCID priceToBook=-6.23, MCD priceToBook=-148.86 (Restaurants 피어). 적자 예상 종목의 음수 forward P/E가 rank 1위('최저=최선')가 되고, MCD류 자사주매입 음수자본의 P/B -148이 중앙값·평균을 파괴해 타겟의 premium_pct(라인 218)가 '섹터 대비 수백% 프리미엄'으로 오출력된다. 상대가치가 결론 근거로 쓰이는 위원회 구조에서 매수/회피 판단을 직접 뒤집을 수 있다.",
+   "fix": "pe_ratio/forward_pe/pb_ratio/ps_ratio/ev_to_ebitda 등 lower-is-better 지표는 값>0만 랭킹·통계에 포함하고, 제외된 음수 개수를 `excluded_negative` 필드로 노출해 '적자 피어 n개 제외'를 에이전트가 알게 하라."
+  },
+  {
+   "title": "fundamental의 FCF 계산이 capex 부호 방어 없음(`operating_cf + capex`) — valuation.py의 방어 로직(`ocf - abs(capex)`)과 불일치, capex가 양수로 오면 FCF가 2×capex만큼 과대",
+   "file": "src/fundamental.py:170-174",
+   "severity": "medium",
+   "category": "bug",
+   "detail": "라인 172 `fcf = operating_cf + capex  # capex는 보통 음수`. 반면 valuation.py:145는 `fcf = ocf - abs(capex)  # capex 부호 방어(양수로 와도 차감)`로 이미 이 함정을 인지하고 방어했다. 일부 비미국 상장(한국·유럽 티커)에서 yfinance가 capex를 양수로 반환하면 fundamental 쪽 FCF는 (OCF+capex)로 과대 → fcf_margin_pct(라인 339), fcf_to_net_income(라인 227)이 부풀어 이익의 질이 '양호(현금 전환 우수)'로 오판되고, 같은 종목의 valuation FCF와 서로 다른 숫자가 두 보고서에 실린다.",
+   "fix": "fundamental.py도 `fcf = operating_cf - abs(capex)`로 통일하거나 공용 헬퍼로 추출해 두 도구가 항상 같은 FCF를 쓰게 하라."
+  },
+  {
+   "title": "trailing↔forward P/E 갭 해석이 음수 forwardPE(적자 전환 예상)를 '시장이 이익 성장을 기대'로 오역",
+   "file": "src/tools/valuation.py:267-283",
+   "severity": "medium",
+   "category": "bug",
+   "detail": "라인 271 `pe_gap = (trailing_pe - forward_pe) / trailing_pe * 100`에서 forward_pe가 음수면(라이브 확인: RIVN forwardPE=-9.09처럼 흔함) gap이 +100% 초과로 튀고, 라인 278의 해석 분기 `pe_gap > 10 → '시장이 이익 성장을 기대'`가 발동한다. 실제 의미는 정반대(향후 EPS 적자 예상)다. 흑자→적자 전환 예상 종목에서 '이익 성장 기대'라는 강세 신호가 보고서에 실려 매수 논거로 오용될 수 있다.",
+   "fix": "`forward_pe <= 0`이면 pe_gap 계산을 건너뛰고 interpretation을 '향후 EPS 적자 예상(forward P/E 음수)'로 명시 분기하라."
+  },
+  {
+   "title": "`abs(x) < 10` 소수→퍼센트 변환 휴리스틱이 초고성장/초고ROE 케이스에서 100배 축소 왜곡 — 흑자전환 폭발 성장(>1000%)이 '12%'로 보고됨",
+   "file": "src/fundamental.py:121-140",
+   "severity": "medium",
+   "category": "bug",
+   "detail": "earningsGrowth·returnOnEquity 등은 소수 형태인데(라이브 확인: AAPL ROE=1.4147=141%) 변환 조건이 `abs(값) < 10`이다. 흑자전환 종목의 earningsGrowth가 12.0(=1,200%)이면 변환이 스킵되어 `earnings_growth_pct: 12.0` → '12% 성장'으로 100배 축소 보고된다. 근소자본 기업의 ROE>1000%도 동일. 하필 이 시스템의 타겟인 J커브 메가트렌드 종목에서 가장 잘 터지는 케이스라, 폭발 성장 신호를 평범한 성장으로 오독하게 만든다. peer_comparison.py:105-110의 operatingMargins/ROE에도 같은 휴리스틱이 복제되어 있다.",
+   "fix": "yfinance info의 해당 필드들은 항상 소수 형태이므로 조건 없이 ×100 변환하고, 휴리스틱을 제거하라(1.2.0에서 확인됨). 방어가 필요하면 임계값 대신 필드별 단위 명세 테이블을 두라."
+  },
+  {
+   "title": "피어 벤치마크(평균·중앙값)에 타겟 자신을 포함 — 프리미엄/할인이 항상 0 방향으로 희석되는 자기참조 편향",
+   "file": "src/tools/peer_comparison.py:164,185,217-218",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "라인 164 `all_metrics = [target_metrics]`로 시작해 sector_averages의 mean/median(라인 185-193)과 premium_pct의 분모(라인 217 median)에 타겟이 들어간다. 피어가 최대 5개뿐이라 표본 6개 중 1개가 자기 자신 → 극단 밸류 종목일수록 벤치마크가 타겟 쪽으로 끌려가 프리미엄이 체계적으로 과소 표시된다. '섹터 대비 프리미엄 크지 않음'이라는 잘못된 안도감을 주어 고평가 경보가 무뎌진다.",
+   "fix": "sector_averages와 premium 분모는 피어만으로 계산하고(랭킹의 분모 n에는 타겟 포함 유지 가능), 응답에 'benchmark=peers only'를 명시하라."
+  },
+  {
+   "title": "정상화 DCF가 '성숙기 15% 마진'을 1년차부터 즉시 적용한 뒤 그 위에 최대 60% 성장까지 얹음 — 적자 J커브 종목 내재가치 과대 앵커",
+   "file": "src/tools/valuation.py:69-84,179",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "`_normalized_dcf`는 현재 매출×15%를 year-1 FCF로 놓고 `_dcf_value`에 그대로 넣는다. 즉 '오늘 당장 성숙기 마진 달성' + 'Phase-1 하이퍼그로스 지속'이라는 양립 불가한 두 가정을 동시에 적용해 이중 낙관이 된다(마진 램프업 구간 누락). caveat 문구는 있으나 normalized_upside_pct 숫자 자체가 크게 부풀어 나오므로, 위원회 에이전트가 '+80% 업사이드' 숫자에 앵커링될 위험이 크다. 반대로 마진 15% 고정은 SaaS(25~30%)엔 과소라 섹터별 왜곡 방향도 제각각이다.",
+   "fix": "마진을 0(또는 현재 FCF마진)에서 목표마진까지 Phase-1~2에 걸쳐 선형 램프업시키고, 목표마진을 섹터별(info['sector'] 기반) 테이블로 차등화하라. 최소한 '즉시 15% 가정' 사실을 assumptions에 수치로 노출."
+  },
+  {
+   "title": "역내재 성장률이 탐색 경계(-10%~100%)에 포화되면 경계값을 답으로 반환 — 초하이프 종목의 시장 기대치를 과소 보고",
+   "file": "src/tools/valuation.py:87-106",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "이진 탐색이 hi=1.0(IMPLIED_SEARCH_HI)에서 시작해, 시장이 100%+ 성장을 반영한 종목(초기 급등 메가트렌드에서 실제 발생)은 수렴하지 못하고 ~100.0을 그대로 반환한다. 라인 242의 assessment는 '초고성장 반영' 밴드에 걸리긴 하나 수치 자체(예: 실제 implied 180%인데 100% 표기)가 틀려, '시장 기대 대비 우리 성장 전망이 높다/낮다' 교차검증이 왜곡된다. -10% floor 쪽도 동일(딥밸류 종목의 역성장 기대 은폐).",
+   "fix": "탐색 종료 후 경계 도달 여부를 검사해 `implied_growth_saturated: true`와 '≥100%'/'≤-10%' 표기를 반환하거나, hi를 2.0으로 올리고 미수렴 시 None+사유를 반환하라."
+  },
+  {
+   "title": "한국 티커(005930.KS 등)에도 미국 무위험금리 4.5%+미국 ERP로 할인 — KRW 현금흐름에 USD 할인율을 적용하는 통화 불일치",
+   "file": "src/tools/valuation.py:10-12,25-29",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "RISK_FREE_RATE=0.045, EQUITY_RISK_PREMIUM=0.055, TERMINAL_GROWTH=0.025가 티커 통화와 무관하게 전역 상수다. CLAUDE.md가 한국 주식(.KS)을 명시 지원하는데, KRW 재무제표 FCF를 미국 금리 기반 자기자본비용으로 할인하고 원화 시총과 비교한다. 한국 국고채 금리·KRW ERP·국가리스크가 반영되지 않아 .KS 종목의 내재가치와 implied growth가 체계적으로 편향된다(금리 격차 방향에 따라 과대/과소).",
+   "fix": "info['currency'](fundamental.py는 이미 수집)로 분기해 통화별 무위험금리·터미널성장 테이블을 적용하고, assumptions에 사용 통화·금리를 표기하라."
+  },
+  {
+   "title": "정적 INDUSTRY_PEERS에 상장폐지 티커(JNPR 등) 잔존 — 조용히 스킵되어 피어 표본이 축소되고 목록 부패가 감지되지 않음",
+   "file": "src/tools/peer_comparison.py:16-37,166-179",
+   "severity": "low",
+   "category": "robustness",
+   "detail": "라이브 확인: 'Communication Equipment'의 JNPR은 HPE 인수 완료로 상폐되어 info에 가격이 없다(currentPrice=None). 라인 169-170에서 조용히 `continue`되어 피어가 4개로 줄지만 출력 어디에도 '요청 5개 중 1개 실패'가 남지 않는다. 하드코딩 목록은 시간이 지날수록 인수·상폐로 부패하는데 감지 장치가 없어, 표본 축소로 중앙값·랭킹의 신뢰도가 소리 없이 떨어진다.",
+   "fix": "수집 실패 티커를 `failed_peers` 필드로 반환하고, 요청 대비 성공률이 낮으면 note에 경고를 추가하라. JNPR은 목록에서 제거."
+  },
+  {
+   "title": "재무제표 로드 실패 시 operating_margin의 info 폴백이 죽은 코드 — 계산만 하고 버려져 마진이 조용히 N/A가 됨",
+   "file": "src/fundamental.py:105-115",
+   "severity": "low",
+   "category": "bug",
+   "detail": "라인 105-107에서 재무제표가 없을 때 info['operatingMargins']로 폴백하는 `operating_margin` 변수를 만들지만, 라인 115의 실제 출력 `operating_margin_pct`는 `operating_income/revenue`만 다시 계산하고 폴백 없이 None을 반환한다. 즉 폴백 로직 전체가 미사용 죽은 코드다. income_stmt 로드가 실패하는 티커(일부 해외 상장·신규 상장)에서 info에 마진 데이터가 있음에도 수익성 섹션이 통째로 N/A가 되어 펀더멘털 평가 정보량이 불필요하게 손실된다.",
+   "fix": "라인 115를 앞서 계산한 `operating_margin` 변수로 교체하되, 라인 106-107의 이중변환 감지 로직(round 자릿수 불일치로 오작동 소지)은 단순 `×100` 명시 변환으로 정리하라."
+  },
+  {
+   "title": "growth_valuation caveat가 'P/S 역사밴드'로 해석하라고 지시하지만 어떤 도구도 역사적 멀티플 밴드를 산출하지 않음 — 에이전트가 근거 없이 추정하거나 지시를 무시하게 됨",
+   "file": "src/tools/valuation.py:192",
+   "severity": "low",
+   "category": "alpha-gap",
+   "detail": "라인 192 caveat: 'TAM 침투·P/S 역사밴드와 함께 해석'. 그러나 valuation·fundamental·peer_comparison 어디에도 해당 종목의 과거 P/S(또는 EV/Sales) 분포·백분위를 계산하는 코드가 없다(peer는 현시점 스냅샷만 제공). 적자 메가트렌드 종목은 표준 DCF가 죽고 growth_valuation이 사실상 유일한 밸류 앵커인데, 그 해석에 필요한 핵심 입력이 파이프라인에 없어 '지금 P/S 20이 이 종목 역사에서 싼가 비싼가'를 판단할 데이터가 없다. 고점 추격/저점 회피 판단 품질을 직접 깎는 공백이다.",
+   "fix": "yfinance 분기 매출 이력 + 주가 이력으로 과거 8~12분기 P/S 시계열과 현재 백분위(예: 'P/S 18.2, 3년 밴드 8~25의 72%ile')를 growth_valuation에 추가 산출하라."
+  },
+  {
+   "title": "portfolio quote()가 _fetch_price 3-튜플을 2개로 언패킹해 항상 크래시 — /invest:portfolio 매수 플로우와 /invest:report 표지 보강이 전부 깨짐",
+   "file": "src/tools/portfolio.py:136",
+   "severity": "critical",
+   "category": "bug",
+   "detail": "커밋 aa44eab(프리/애프터마켓 반영)에서 `_fetch_price`가 `(price, listed_ccy, session)` 3-튜플을 반환하도록 바뀌었는데(portfolio.py:304-337, 실패 시에도 `(None, None, None)`), `quote()`의 `price, listed_ccy = _fetch_price(ticker)`(136행)는 갱신되지 않았다. 오프라인 재현 결과 `ValueError: too many values to unpack (expected 2)`로 100% 예외 발생 → CLI는 `{\"error\": ...}`만 출력한다. portfolio.md의 '공통: 종목 정보 표시'(33행)·모드 A/B가 매 매수마다 이 quote를 호출하고, report.md Step 2(30행)도 Key-Data 보강에 `portfolio quote`를 쓰라고 지시하므로, 매수 입력 보조·suggested_currency 제안·PDF 사이드바 정확도 보강이 전부 무력화된다(에이전트가 조용히 quote 없이 진행하면 통화/현재가 오입력 위험).",
+   "fix": "portfolio.py:136을 `price, listed_ccy, _session = _fetch_price(ticker)`로 수정(또는 세션을 quote 결과에 포함). 회귀 방지로 `quote()` 단위 테스트(3-튜플 mock) 추가."
+  },
+  {
+   "title": "portfolio.md 추가매수 지시가 add의 '덮어쓰기' 동작과 결합해 기존 포지션을 파괴 — 가중평균 평단 계산 지시 부재",
+   "file": ".claude/commands/invest/portfolio.md:51",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "portfolio.py `add_holding`(232-262행)은 같은 티커가 있으면 행을 **통째로 교체**한다(records[i] = new_rec). 그런데 스킬 51행은 \"같은 티커가 이미 있으면 덮어쓰기(update) — 평단 갱신/**추가매수 반영**에 사용\"이라고만 하고, 모드 B(77-83행)는 '수량·매입가를 입력받아 add 실행'만 지시한다. 사용자가 \"IREN 10주 더 샀어 @$50\"라고 하면 에이전트는 이번 매수분(10주, $50)으로 add를 실행 → 기존 보유(예: 100주 @$30)가 10주 @$50으로 대체되어 원금·손익·비중이 전부 틀어진다. 기존 행을 읽어 합산 수량·가중평균 평단·혼합 매입환율을 계산하라는 절차가 어디에도 없다. 부분 매도(모드 C 87행 'B의 update로 수량 조정')도 같은 함정(기존 평단을 재입력해야 함)을 명시하지 않는다.",
+   "fix": "스킬 모드 B에 절차 추가: 기존 보유 확인(`portfolio --json` 또는 파일 read) → 합산수량 = 기존+신규, 새 평단 = (기존수량×기존평단+신규수량×신규가)/합산수량, 매입환율도 금액가중 혼합 → 그 값으로 add 실행. 장기적으로는 CLI에 `add --append` 모드(자동 가중평균)를 추가."
+  },
+  {
+   "title": "crypto.md가 'mandate는 crypto 자동선택'을 사실로 단정 — yfinance info 실패 시 조용히 default(10% 상한) mandate로 사이징됨",
+   "file": ".claude/commands/invest/crypto.md:160",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "risk_analyzer.py 190-207행: quoteType은 `ticker.info` 조회로 얻는데, 이 블록은 `except: pass`라 yfinance rate-limit/네트워크 실패 시 quote_type=\"\" → is_crypto=False → `mandate_profile_for_ticker`로 넘어가 **default mandate(최대 10%, moderate)**가 조용히 적용된다. crypto.md Step 2(160행)는 risk-officer에게 \"mandate는 crypto가 자동 선택됩니다\"라고 단정할 뿐 출력의 `mandate_profile` 필드 검증이나 명시 지정을 지시하지 않는다. 크립토 문맥이 이미 확정된 스킬인데도 자동선택에 의존해, 실패 시 권고 비중이 절반(20%→10%)으로 깎인 결과가 검증 없이 위원회 보고서에 들어간다. CLAUDE.md·cli.py 사용법 문자열의 `--mandate default|megatrend` 표기도 crypto 옵션을 누락해 명시 지정을 유도하지 못한다.",
+   "fix": "crypto.md의 risk-officer 프롬프트를 `cli.py risk <YF_SYM> --mandate crypto ...`로 명시 지정하도록 수정(모드 B의 risk 프롬프트도 동일). 보조로 '출력의 mandate_profile==crypto 확인, 아니면 재실행' 한 줄 추가. cli.py/CLAUDE.md 사용법에 crypto 옵션 표기."
+  },
+  {
+   "title": "portfolio 스킬에 크립토 yfinance 심볼 트랩(TON/UNI 오인) 방어가 없음 — 보유 크립토를 엉뚱한 토큰 가격으로 평가",
+   "file": ".claude/commands/invest/portfolio.md:33",
+   "severity": "medium",
+   "category": "consistency",
+   "detail": "crypto.md 21행은 \"TON·UNI·APT·SUI·PEPE·POL 등은 단순 '심볼-USD'가 엉뚱한 토큰(TON-USD≈$0.009)을 반환\"한다고 강하게 경고하고 crypto_data.py의 YF_OVERRIDE(예: TON→TON11419-USD)로 방어하지만, portfolio.md에는 이 방어가 전혀 없다. 사용자가 Toncoin 보유를 \"TON 추가\"로 입력하면 quote/add/analyze_portfolio가 원시 티커 그대로 yfinance를 조회해(portfolio.py 304-337) 동명의 다른 자산 가격으로 **조용히 틀린 평가액·손익·비중**을 계산한다. 비중은 리밸런싱·집중도 판단의 입력이므로 판단 왜곡으로 직결된다.",
+   "fix": "portfolio.md 공통 절차에 추가: quoteType이 크립토이거나 티커가 코인명이면 먼저 `cli.py crypto <SYM>`으로 `yfinance_symbol`을 해석해 그 심볼로 add/quote 실행(crypto.md 21행과 동일 경고문 이식). quote 결과의 name/시총을 사용자에게 확인시켜 오인 차단."
+  },
+  {
+   "title": "매도 시 실현손익·매매기록이 소멸 — 승률/R-multiple 피드백 루프 부재로 확신도 캘리브레이션 불가",
+   "file": ".claude/commands/invest/portfolio.md:85",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "모드 C(85-98행)는 `portfolio remove`로 행 삭제 + theses.md 섹션 **제거** + positions.md에 한 줄 메모만 남긴다. 매도가·실현손익·보유기간·당초 thesis 대비 결과(R-multiple 달성 여부)를 기록하는 절차가 없어, '연 100%+ 공격 베팅 + 손절 규율' 시스템의 핵심인 승률·손익비 실측 → conviction(0.5~2.0) 배수 캘리브레이션 루프가 구조적으로 불가능하다. risk 도구가 R-multiple·손절선을 산출해도 사후 검증 데이터가 안 쌓이므로, 시스템의 사이징 공격성이 실적과 무관하게 고정된다.",
+   "fix": "모드 C에 필수 단계 추가: remove 전에 `portfolio --json`으로 매도 시점 평가를 스냅샷 → `data/trades.md`(신규, .gitignore)에 티커·진입/청산가·실현손익%·R-multiple·보유기간·매도 사유(손절/익절/thesis 훼손)를 append. /invest:stock·crypto의 knowledge-agent가 이 파일로 승률·평균 R을 조회해 conviction 산출에 반영하도록 연결."
+  },
+  {
+   "title": "portfolio 스킬의 집중도 판단이 '상위2 합산'과 하드코딩된 'IREN 실효노출'뿐 — 테마 클러스터 집중도·리밸런싱 규칙 부재",
+   "file": ".claude/commands/invest/portfolio.md:64",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "64행은 positions.md 동기화 시 \"집중도 메모(IREN 실효노출, 상위2 합산)\"를 쓰라고 하는데, 특정 개인 보유종목(IREN)이 범용 스킬에 하드코딩돼 있어 IREN 전량 매도 후엔 죽은 지시가 되고 다른 보유구성에선 무의미하다. 더 중요하게, 메모리의 IREN 사례(단일 9.2%인데 AI-데이터센터 클러스터 56%)처럼 상관 높은 테마 묶음의 실효 노출을 계산하는 절차가 없다 — 모드 D(100-108행)는 '최대 비중/집중 종목'만 보고한다. mandate의 max_position_pct(25%)는 단일 종목 기준이라 클러스터 단위로는 손절 규율이 동시 발동하는 꼬리 위험을 못 잡는다.",
+   "fix": "64행의 IREN 하드코딩을 일반 규칙으로 교체: `cli.py themes <TICKER>`로 각 보유 종목의 테마를 붙여 테마별 합산 비중을 산출하고, 클러스터 상한(예: 단일 테마 50%) 초과 시 모드 D에서 경고 + 리밸런싱 후보(축소/대체)를 제시하는 단계를 추가."
+  },
+  {
+   "title": "crypto.md 심층 모드에 분석 전 보유·클러스터 확인 단계가 없음 — '신규 투자자' 프레임 오판 재발 소지",
+   "file": ".claude/commands/invest/crypto.md:115",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "Step 0(115-134행)은 티커 해석·팀 생성만 하고, 사용자의 실제 보유(data/portfolio.md)와 크립토 상관 노출(예: BTC 채굴주 IREN 보유 중 BTC 신규 매수 = 같은 베타 중첩)을 확인하는 단계가 없다. T2 knowledge-agent는 '기존 분석 이력'만 조회한다(144행). 메모리에 기록된 IREN 사례(신규가 아닌 9.2% 보유 + 클러스터 56% 상태에서 단독 평가)와 동일한 오류가 크립토 트랙에서 재발할 수 있다 — 12절 이중 추천(보유자/신규)과 risk-officer의 권고 비중이 실보유 문맥 없이 산출되면 max 20% 한도가 실효 노출 기준으론 이미 초과일 수 있다.",
+   "fix": "Step 0에 1개 항목 추가: `cli.py portfolio --json`으로 해당 코인 보유 여부 + 크립토·크립토프록시(채굴주 등) 합산 노출을 확인해 Chair와 risk-officer(T6) 프롬프트에 전달. 보유 중이면 이중 추천의 '보유자' 트랙을 실보유 평단·비중 기준으로 작성하도록 지시."
+  },
+  {
+   "title": "setup.md가 생성 산출물을 잘못 기술 — crypto.json 누락 + 존재하지 않는 data/histories/EXAMPLE.md 참조",
+   "file": ".claude/commands/invest/setup.md:19",
+   "severity": "low",
+   "category": "consistency",
+   "detail": "19행은 `cli.py setup`이 \"default.json(보수)·megatrend.json(공격)을 생성\"한다고 하지만 setup_tool.py 166-177행은 **crypto.json 포함 3개**를 생성한다. 3단계 안내(37행)도 mandate 수정 예시에서 크립토 프로파일을 언급하지 않아, 사용자가 크립토 한도(20%)·$1B 하한을 본인 전략에 맞게 조정할 수 있다는 사실을 놓친다. 또한 9행의 골격 설명이 `data/histories/EXAMPLE.md`를 참조하는데 실제 추적 파일은 `data/histories/EXAMPLE/`(summary.md+report.md 디렉토리)다 — 디렉토리 규약으로 이전된 뒤 갱신 누락.",
+   "fix": "19행을 \"default·megatrend·crypto 3종 생성\"으로 수정하고 3단계 안내에 crypto mandate 편집 항목 추가. 9행을 `data/histories/EXAMPLE/`로 수정(CLAUDE.md의 동일 표기도 함께)."
+  },
+  {
+   "title": "crypto.md 보고서 템플릿이 glossary가 금지한 영어(dry powder·net liquidity·섹터 로테이션)를 그대로 내장 — 상충 지시로 출력 용어 비일관",
+   "file": ".claude/commands/invest/crypto.md:211",
+   "severity": "low",
+   "category": "consistency",
+   "detail": "211행 시각화 규칙은 glossary를 Read해 \"net liquidity·dry powder·conviction 등 → 한글\"로 옮기라고 명시하고, glossary.md A표(22·23행)는 dry powder→'대기 유동성(실탄)', net liquidity→'순유동성', C표(52행)는 '(섹터) 로테이션→순환매'로 규정한다. 그런데 같은 파일의 최종 보고서 템플릿이 '💱 시장구조/모멘텀 … dry powder'(231행), '💧 스테이블 dry powder(30d)'(282행), '💧 net liquidity'(329행), '🔁 섹터 로테이션'(281행)을 표 라벨로 내장하고 있어 에이전트가 템플릿을 복사하면 glossary를 위반하고, 지키면 템플릿과 어긋난다. 보고서마다 용어가 오락가락하면 이력 메모 검색(memo search)·이전 보고서 대비 비교의 일관성이 떨어진다.",
+   "fix": "crypto.md 템플릿 라벨을 glossary 표준어로 일괄 치환(스테이블 대기 유동성(실탄), 순유동성, 섹터 순환매). glossary '유지 허용' 목록에 예외로 남길 단어가 있으면 그쪽에 명시해 상충을 해소."
+  },
+  {
+   "title": "브로드 섹터·분산 ETF(XLV·XLU·ARKX·QTUM) holdings가 메가트렌드 멤버십을 오염시켜 방어주에 공격 mandate(25%·PER게이트 해제)가 자동 적용됨",
+   "file": "src/tools/theme_etf_map.py:160",
+   "severity": "critical",
+   "category": "methodology",
+   "detail": "theme_members = (ETF holdings ∪ reps) − exclude 인데 '비만치료제/GLP-1'의 소스가 섹터 전체 ETF XLV, '데이터센터 전력'이 XLU, '우주'가 ARKX, '양자'가 QTUM이다. 캐시된 holdings로 실측 확인: JNJ/UNH/PFE → 'GLP-1' megatrend, DUK/SO/NEE → 'DC전력' megatrend, DE(존디어)/AMZN → '우주' megatrend, NOK → '양자' megatrend (`python3 -c \"themes_for_ticker('JNJ')\"` → megatrend 확인). risk_analyzer.py:207이 이 함수로 mandate를 자동 선택하므로, 듀크에너지·JNJ 같은 저베타 방어주에 max_position 25%·aggressive·PER게이트 비활성 사이징이 산출된다. 반대로 mandate-check도 이들을 megatrend로 통과시켜 '메가트렌드 집중 베팅' 자본이 비(非)트렌드 종목으로 새는 구조 — 연 100% 목표의 핵심 엔진(자금을 진짜 트렌드에 집중)이 정면으로 훼손된다.",
+   "fix": "pure-play ETF만 멤버십 소스로 사용: XLV·XLU·ARKX·QTUM은 THEME_ETF_MAP에서 자금흐름 프록시(etfs[0])로만 쓰고 멤버십 산출에서 제외하는 플래그(예: membership_etfs 별도 키) 도입. 대안: 테마별 exclude 보강 + holdings 편입 시 키워드/업종 2차 확인."
+  },
+  {
+   "title": "portfolio add가 기존 보유 티커를 '덮어쓰기'하여 추가매수(피라미딩) 시 기존 수량·평단이 파괴됨 — CLAUDE.md의 '매수(추가/평단 갱신)'와 불일치",
+   "file": "src/tools/portfolio.py:250",
+   "severity": "critical",
+   "category": "bug",
+   "detail": "add_holding()은 같은 티커 발견 시 records[i] = new_rec 로 통째 교체한다(250-254행, docstring '같은 티커가 있으면 덮어쓴다'). CLAUDE.md는 `portfolio add ... 매수(추가/평단 갱신)`으로 문서화되어 있고, /invest:portfolio 모드 B(추가매수)는 사용자가 준 신규 매수 수량·가격을 그대로 add에 넘기라고만 지시(가중평균 계산 지시 없음). 예: NVDA 10주@120 보유 중 5주@150 추가매수 → `add NVDA --qty 5 --price 150` → 보유가 5주@150으로 대체. 이 시스템의 핵심 전략인 피라미딩을 실행할 때마다 포트폴리오 원장(단일 진실 소스)이 조용히 오염되어 이후 손익·비중·클러스터·손절 R 계산이 전부 틀린다.",
+   "fix": "add_holding에서 기존 티커 존재 시 qty 합산 + 가중평균 buy_price·buy_fx 계산을 기본 동작으로(action: 'pyramided'), 전량 교체는 --replace 플래그로 분리. 부분매도용으로 skill 모드 C가 의존하는 'update로 수량 조정' 경로도 --replace로 명시."
+  },
+  {
+   "title": "portfolio quote가 3-튜플을 2변수로 언패킹하여 항상 ValueError 크래시 — 매수 입력 워크플로(스킬 모드 A/B 1단계) 전면 불능",
+   "file": "src/tools/portfolio.py:136",
+   "severity": "high",
+   "category": "bug",
+   "detail": "136행 `price, listed_ccy = _fetch_price(ticker)` 인데 _fetch_price는 (price, ccy, session) 3-튜플을 반환(304-337행, 모든 경로). 스텁 테스트로 재현 확인: 'ValueError: too many values to unpack (expected 2)'. 네트워크 상태와 무관하게 100% 크래시. /invest:portfolio 스킬의 모드 A(구성)·B(매수) 첫 단계가 quote 호출이므로 매수 입력 UX(현재가·suggested_currency 제시)가 통째로 죽고, 에이전트는 에러 JSON을 보고 quote를 건너뛰거나 잘못된 통화를 추정 입력하게 된다.",
+   "fix": "`price, listed_ccy, _ = _fetch_price(ticker)` 로 수정. 회귀 방지를 위해 _fetch_price 반환 형태에 대한 최소 단위테스트 추가."
+  },
+  {
+   "title": "USD/KRW 외 통화(EUR·JPY 등)는 환율 1.0으로 조용히 원화 환산 — 시스템이 스스로 megatrend로 지목하는 RHM.DE·012450.KS 류 보유 시 평가액 수백~수천 배 왜곡",
+   "file": "src/tools/portfolio.py:369",
+   "severity": "high",
+   "category": "robustness",
+   "detail": "analyze_portfolio 363-370행: 통화가 'USD'가 아니면 else(#KRW) 분기로 cur_fx=buy_fx=1.0. _norm_currency는 'EUR'을 그대로 통과시키고(50행), _suggest_currency도 상장통화(EUR 등)를 그대로 제안(116행)하므로 add 시 경고 없이 EUR 행이 생성된다. 372행 경고는 입력통화≠상장통화일 때만 발화 — EUR로 올바르게 입력할수록 경고 없이 RHM.DE 평가액이 1유로=1원으로 계산돼 ~1/1600로 축소된다. theme_etf_map 주석과 SHLD holdings(RHM.DE·012450.KS·LDO.MI 캐시 확인)가 유럽·한국 방산주를 megatrend 후보로 밀고 있어 실제로 밟기 쉬운 지뢰.",
+   "fix": "지원 통화 화이트리스트(USD/KRW) 밖이면 명시적 에러 또는 `<CCY>KRW=X` 환율을 yfinance로 조회해 환산. add_holding에서도 비지원 통화 입력 시 경고 반환."
+  },
+  {
+   "title": "현재가 조회 실패 종목이 합계에서 '원가는 포함·평가액은 0'으로 집계돼 총손익에 해당 종목 -100%가 유령 반영되고 나머지 비중이 과대 산출",
+   "file": "src/tools/portfolio.py:386",
+   "severity": "high",
+   "category": "robustness",
+   "detail": "378-387행: price None이면 total_cost_krw += cost_krw 후 continue(total_value_krw 미가산). 420행 total_pnl = total_value − total_cost 이므로 상폐/티커오타/일시적 API 실패 종목의 전체 원가가 손실로 잡힌다. 예: 30% 비중 종목 조회 실패 → 합계 손익 -30%p 왜곡, 동시에 나머지 종목 weight_pct는 축소된 total_value 대비라 전부 과대(집중도 과대판정 → 불필요한 트리밍 판단 유발). 개별 경고는 있으나 totals 숫자 자체가 틀린 채 출력된다.",
+   "fix": "totals를 priced-only로 집계하고 `unpriced_cost_krw`·`unpriced_tickers`를 totals에 별도 필드로 노출, render_table 합계행에 '미평가 원가 제외' 명시. pnl_pct 분모도 priced cost로."
+  },
+  {
+   "title": "매매 원장·실현손익·승률 추적이 전무 — remove는 행 삭제, add는 덮어쓰기라 연 100% 목표에 필수인 성과 피드백 루프(승률·평균 R) 구축 불가",
+   "file": "src/tools/portfolio.py:265",
+   "severity": "high",
+   "category": "alpha-gap",
+   "detail": "remove_holding(265-278행)은 행을 지울 뿐 매도가·실현손익을 어디에도 기록하지 않고, add_holding 덮어쓰기도 이력을 소멸시킨다. grep 결과 src 전체에 trade ledger/realized/승률 코드 0건 — risk_analyzer의 win_rate(248행)는 '일간 주가 상승일 비율'이지 본인 매매 성과가 아니다. 손절 규율 기반 모멘텀 전략의 생명선은 '내 실제 승률 × 평균 R'로 conviction과 사이징을 보정하는 루프인데, 현재 구조는 트레이드가 끝날 때마다 데이터가 증발해 전략이 학습 불가능하다.",
+   "fix": "add/remove 시 data/trades.jsonl에 append(일자·티커·방향·수량·가격·환율·매도 시 실현손익 자동계산). `portfolio stats` 서브커맨드로 승률·평균 R·프로핏팩터·보유기간 산출, risk 도구의 --conviction 권고에 연결."
+  },
+  {
+   "title": "클러스터(테마) 집중도 자동 계산 부재 — 종목별 25% 캡이 동일 테마 다종목으로 우회되는데 이를 잡는 도구가 없음",
+   "file": "src/tools/portfolio.py:415",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "analyze_portfolio는 종목별 weight_pct만 산출(415-418행)하고, 보유 종목을 theme_members/themes_for_ticker와 조인하는 코드는 src 전체에 없다(grep 'cluster|클러스터|집중도' 0건). 메모리에 기록된 IREN 사례(디지털인프라 클러스터 56%)와 /invest:portfolio 스킬의 '상위2 합산 50%+' 판정이 전부 에이전트 수작업·기억 의존 — WGMI/BITQ 계열 3종목을 각 20%씩 들면 단일 캡은 통과하지만 BTC 단일 팩터에 60% 노출되는 것을 시스템이 감지하지 못한다.",
+   "fix": "analyze_portfolio 결과에 `clusters` 필드 추가: 각 보유 티커를 themes_for_ticker로 매핑해 테마별 합산 비중 산출, 임계(예: 40%) 초과 시 warnings에 포함. risk 도구에 클러스터 노출을 사이징 감산 입력으로 전달."
+  },
+  {
+   "title": "메모 템플릿에 CLAUDE.md 필수 규격 '진입가 2-Case' 슬롯이 없고 write_memo가 필수 필드 누락을 N/A로 조용히 채움",
+   "file": "src/tools/memo_manager.py:38",
+   "severity": "medium",
+   "category": "consistency",
+   "detail": "CLAUDE.md 메모 규격 7·8항은 '진입가 2-Case 필수'(Case A 현재가 즉시 / Case B 눌림목, 각각 진입 비중)를 요구하지만 MEMO_TEMPLATE(38-120행)에는 해당 슬롯이 없다 — decision_new·position_sizing 자유 서술에 묻히거나 누락된다. 또한 _render_summary(126-149행)는 모든 필드를 data.get(..., 'N/A')로 채워 필수 항목 누락이 감지되지 않는다. '눌림목 앵커링 금지'는 이 프로젝트의 명시적 행동 교정 규칙(메모리 파일 존재)인데 저장 계층이 이를 강제하지 못해 규격이 서서히 퇴화한다.",
+   "fix": "템플릿에 `entry_case_a`/`entry_case_b` 전용 섹션 추가(각 진입 비중 필드 포함). write_memo 반환에 missing_fields 리스트를 넣어 필수 키(thesis, stop_loss, entry_case_a/b, scenario_analysis 등) 누락 시 경고."
+  },
+  {
+   "title": "USDKRW 환율 조회 실패 시 analyze_portfolio가 None 곱셈 TypeError로 통째 크래시(cryptic 에러 JSON만 출력)",
+   "file": "src/tools/portfolio.py:390",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "353행 usdkrw = fx_override or _fetch_usdkrw() 가 None이면(야후 일시 장애 등) USD 종목에서 cur_fx=None이 되고 390행 `value_native * cur_fx` 에서 TypeError → cli.py가 {\"error\": \"unsupported operand type(s)...\"} 만 출력하고 전체 평가가 죽는다. buy_fx까지 없으면 376행 cost_native * None에서 더 이르게 크래시. 장애 시점에 포트폴리오 상태를 아예 볼 수 없게 되는 가용성 문제이며 에러 메시지로는 원인(환율 조회 실패) 추정도 어렵다.",
+   "fix": "usdkrw None이면 (a) 보유 행의 buy_fx 중앙값으로 대체하고 warnings에 '현재환율 조회 실패 → 매입환율 대체' 명시, 또는 (b) '환율 조회 실패: --fx 로 수동 지정하세요' 명시적 에러 반환."
+  },
+  {
+   "title": "`themes <TICKER>` CLI는 회사명·섹터 없이 판정하지만 risk_analyzer는 company_name 키워드 매칭 포함 — 두 도구의 mandate 판정이 갈릴 수 있음",
+   "file": "src/tools/cli.py:159",
+   "severity": "low",
+   "category": "consistency",
+   "detail": "cli.py cmd_themes(159-160행)는 themes_for_ticker(t)만 호출(name/sector 미전달)하는 반면 risk_analyzer.py:207은 mandate_profile_for_ticker(ticker, sector, company_name)으로 키워드 경로까지 사용한다. holdings/reps에 없고 회사명 키워드로만 매칭되는 종목(예: 이름에 'quantum'·'aerospace' 포함 신규 종목)은 `themes` 조회에선 default, `risk`에선 megatrend로 보고돼 에이전트 간 mandate 인식이 어긋난다 — 특히 market 스캔에서 발굴한 신규 테마주에서 발생 확률이 높다.",
+   "fix": "cmd_themes에서 yf.Ticker(t).info로 longName·sector를 조회해 themes_for_ticker/mandate_profile_for_ticker에 동일 인자로 전달(조회 실패 시 현행 폴백)."
+  },
+  {
+   "title": "stock.md 심층 모드에 '보유 여부·클러스터 집중도 확인' 단계가 전혀 없음 — 메모리 노트(IREN 사례) 미반영",
+   "file": ".claude/commands/invest/stock.md:126",
+   "severity": "high",
+   "category": "alpha-gap",
+   "detail": "메모리 노트 '종목분석 전 포트폴리오·클러스터 확인'(IREN: 신규 아닌 9.2% 보유+클러스터 56%)이 스킬에 반영되지 않았다. stock.md 전체(791줄)에 `portfolio`/`포트폴리오`/`클러스터` 문자열이 0회 — grep으로 확인. Step 0~6 어디에도 `cli.py portfolio --json` 호출이 없고, T7 risk-officer 프롬프트(204행)도 현재 보유비중·동일테마 클러스터 합산을 전달하지 않는다. 그 결과 '이중 추천(보유자/신규)'과 포지션 사이징(recommended=neutral_base×conviction, 최대 25%)이 실제 보유 데이터 없이 단독 종목 기준으로 산출된다. AI·전력 등 테마가 이미 포트폴리오의 50%+를 차지한 상태에서 같은 클러스터 종목에 추가 25%를 권고하는 구조적 과다집중이 재발 가능 — 손절 규율 기반 집중 베팅 철학에서도 클러스터 단위 하방은 통제돼야 한다.",
+   "fix": "Step 0(팀 생성) 앞에 'Step -1: `python3 src/tools/cli.py portfolio --json` + `memo list`로 (a) 해당 티커 보유 여부·평단·비중, (b) 동일 테마(themes <TICKER>) 클러스터 합산 비중을 확인하고 Chair 컨텍스트에 고정' 단계를 추가. T7 risk-officer 프롬프트에 '현재 보유 X%·클러스터 합산 Y%를 감안해 잔여 여력 기준으로 사이징' 문구를 넣는다."
+  },
+  {
+   "title": "stock.md 최종 보고서 템플릿이 폐기된 '최대 허용 비중 = VaR/Kelly/Mandate 중 최소' 교리를 재도입 — 자기모순",
+   "file": ".claude/commands/invest/stock.md:714",
+   "severity": "high",
+   "category": "consistency",
+   "detail": "714행 포지션 사이징 표: `| 📏 최대 허용 비중 | Y% | VaR/Kelly/Mandate 중 최소 |`. 이는 (a) 같은 파일 204행 risk-officer 프롬프트 'VaR/Kelly는 soft_warnings 참고치일 뿐 자동 감점 요인이 아니며', (b) risk-officer.md:58 \"'최소값' 교리 폐기: VaR·Kelly·Mandate 중 최소값으로 비중을 깎지 않습니다\", (c) risk_analyzer.py:302 method 문자열('VaR/Kelly는 경고용 참고치(자동 감점 안 함)')과 정면충돌한다. risk-officer가 확신도 가중으로 올려준 비중을 Chair가 보고서 작성 단계에서 노이즈 Kelly(일별 수익률 빈도 기반, 기대수익 미반영 — 메모리 노트의 기지 결함)나 VaR 상한으로 다시 깎게 유도 → 공격 개편으로 걷어낸 보수 편향이 최종 산출물에서 부활, 고확신 베팅 비중이 체계적으로 축소된다.",
+   "fix": "714행을 `| 📏 최대 허용 비중 | Y% | mandate_max (VaR/Kelly는 soft_warnings 참고 병기) |`로 수정."
+  },
+  {
+   "title": "시나리오 기반 Kelly가 CLI로 전달 불가능 — risk-officer 지침의 교차검증·'avoid' 신호가 영구 불발",
+   "file": "src/tools/cli.py:103",
+   "severity": "high",
+   "category": "consistency",
+   "detail": "risk_analyzer.analyze_risk(92-110행)는 scenarios 파라미터를 받아 calc_scenario_kelly(44행)로 비대칭 페이오프 Kelly와 '기대수익 음수 → avoid(진입 보류)' 신호를 산출하도록 수정됐으나(메모리 노트 'Half-Kelly 결함 → calc_scenario_kelly로 수정'), cli.py cmd_risk(103-107행)와 risk 커맨드 파서(315-326행)에 --scenarios 옵션이 없어 에이전트가 이 경로를 호출할 방법이 없다. risk-officer.md:87은 '시나리오 기반 Kelly로 교차검증'을 지시하고 stock.md T7은 T6(valuation 시나리오) 완료 후 실행되므로 입력은 존재하는데 배선이 끊겨 있다. 결과: 항상 노이즈 Kelly(basis=noise_based_daily, 기대수익 미반영·항상 양수 가능)만 나오고, 277행의 '시나리오 Kelly 기대수익 음수 → 진입 보류' soft_warning은 절대 발화하지 않는다 — 기대수익 음수 베팅을 걸러주는 마지막 정량 안전장치가 죽어 있음.",
+   "fix": "cli.py risk에 `--scenarios '[{\"prob\":0.3,\"return_pct\":120},...]'`(또는 --scenarios-stdin) 옵션을 추가해 cmd_risk→analyze_risk(scenarios=...)로 연결하고, stock.md T7 프롬프트에 'valuation의 Bull/Base/Bear 확률·수익률을 --scenarios로 전달' 지시를 추가."
+  },
+  {
+   "title": "macro 4분면 분류기: '성장 확장 + 인플레 안정'(가장 흔한 강세 레짐)이 TRANSITION/UNCLEAR로 라벨 — 공격 자세가 체계적으로 중립화",
+   "file": "src/tools/macro_data.py:635",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "635-644행: GOLDILOCKS는 growth_axis>=1 AND inflation_axis<=-1일 때만 부여되는데, inflation_axis=-1은 10y 금리 3M -25bps 이상 급락 OR 유가/구리 -10% 급락을 요구한다(630-633행). 즉 성장 확장 + 인플레 '보합'(axis=0)이라는 강세장의 최빈 상태는 else로 떨어져 'TRANSITION / UNCLEAR'가 된다. cycle_stage도 동일: MID CYCLE은 inflation_axis>=1을 요구(654행)해 무인플레 확장이 TRANSITION 처리. macro.md 판정 박스와 자산배분 틸트가 이 quadrant를 1차 근거로 쓰므로, 정상 강세 레짐에서 '전환·불명확 → 중립 자세'로 강등되는 보수 편향이 톱다운 깔때기 최상단에서 발생해 megatrend 공격 배팅의 매크로 순풍 판정을 깎는다.",
+   "fix": "growth_axis>=1 & inflation_axis==0 → 'EXPANSION / GOLDILOCKS-LEAN(성장 우위·인플레 안정)' 셀을 추가(반대로 growth<=-1 & infl==0 → SLOWDOWN-LEAN). cycle_stage의 MID CYCLE 조건에서 inflation_axis>=1 요구를 'inflation_axis>=0'로 완화."
+  },
+  {
+   "title": "sector_scan: SPY 수집 실패를 조용히 삼켜 전 테마 RS가 소실돼도 정상 출력처럼 보임 — 모드 M breadth 판정 왜곡",
+   "file": "src/tools/sector_scan.py:79",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "78-82행: `try: spy=... except Exception: spy_3m=None` — errors 리스트에 기록하지 않는 유일한 silent fallback. spy_3m=None이면 모든 행의 rs_vs_spy_3m_pct=None → (a) momentum_score에서 RS 40점이 전 테마 일괄 소실(43-44행), (b) rating이 🟢 조건(rs>5 & 50일선) 불충족으로 대부분 🟡ㅇ로 수렴(52-57행). market.md 모드 M은 이 rating 집계로 breadth(위험선호/회피, 쏠림/확산)를 판정(M-2)하므로 SPY 한 심볼 실패가 '시장 전반 중립'이라는 조용히 틀린 결론을 만든다. 출력의 errors 배열은 비어 있어 에이전트가 degraded 상태를 인지할 수 없다.",
+   "fix": "except 절에서 `errors.append({\"symbol\":\"SPY\",\"error\":...})` 기록 + 반환 dict에 `rs_available: false` 플래그를 추가하고, market.md 모드 M에 'spy_3m_return_pct=null이면 breadth 판정 보류·WebSearch 보강' 지침을 추가."
+  },
+  {
+   "title": "market.md 종목 스캔 표의 '숏인터레스트'를 momentum 도구 산출값으로 채우라고 지시하나 도구는 이를 산출하지 않음 — 수치 할루시네이션 유도",
+   "file": ".claude/commands/invest/market.md:240",
+   "severity": "medium",
+   "category": "consistency",
+   "detail": "240행: \"'RS·3M 모멘텀·52주 고점대비%·숏인터레스트'는 `cli.py momentum <T>` 산출 수치로 채움\". momentum.py의 반환 키(97-118행)는 returns_pct/pct_from_52w_high/volume_surge_x/relative_strength/momentum_score 등이며 short interest 관련 키가 없다. 'RS(vs 섹터/지수)' 열도 도구는 SPY·QQQ 대비만 산출(벤치마크 하드코딩 21행)하고 섹터 ETF 대비 RS는 없다. 존재하지 않는 수치를 도구 출력으로 채우라는 지시는 LLM이 그럴듯한 숏인터레스트 %를 지어내게 하는 전형적 할루시네이션 유도 — 숏스퀴즈 판단이 걸린 열이라 톱픽 선정 오류로 직결될 수 있다.",
+   "fix": "momentum.py에 `info.get(\"shortPercentOfFloat\")` 기반 short_interest_pct 키를 추가하거나, market.md 240행에서 숏인터레스트의 출처를 'WebSearch/yfinance info(미확인 시 N/A)'로 명시하고 momentum 출처 목록에서 제거."
+  },
+  {
+   "title": "conviction(0.5~2.0) 산출에 정량 루브릭이 없어 서사 분석 에이전트의 정성 판단이 포지션을 최대 2배 스케일 — 확증편향·비재현 구조",
+   "file": ".claude/commands/invest/stock.md:151",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "147-151행 T0: market-analyst가 sectors/momentum 수치를 '종합해' conviction 0.5~2.0을 산출해 T7에 전달하고, risk_analyzer.py:264에서 recommended=neutral_base×conviction으로 비중이 직결된다(megatrend면 12.5%→25%). 그러나 momentum_score·rating→conviction 변환 규칙이 어디에도 없어 회차·종목 간 비교 불가능하고, 서사 강도를 평가한 동일 에이전트가 자기 서사에 대한 확신도를 매기는 구조라 강한 내러티브일수록 확증편향으로 상단(1.5~2.0)에 몰리기 쉽다. 여기에 204행 'risk-officer는 진입 거부권이 아니라 사이징 입력'까지 겹치면 conviction 인플레를 견제할 정량 앵커가 전무 — 사이징이 시스템에서 가장 큰 레버인데 가장 규율이 약한 입력이다.",
+   "fix": "T0에 결정론적 루브릭을 명시: 예) 기본 1.0, momentum_score>=70 +0.3, breakout_buy_setup=true +0.2, 소속 테마 rating 🟢 +0.3 / 🔴 -0.3, 서사 '과열' 판정 시 -0.2, RS(SPY) 음수면 상한 1.0 — 합산 후 0.5~2.0 클램프. 산출식을 보고서에 그대로 기록해 재현 가능하게 한다."
+  },
+  {
+   "title": "과거 추천의 실현 성과를 채점하는 피드백 루프가 3개 스킬 어디에도 없음 — 확신도 캘리브레이션 불가",
+   "file": ".claude/commands/invest/stock.md:170",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "knowledge-agent(T2, 170행)는 '기존 분석 이력과 관련 지식 조회'만 지시받고, 보고서 섹션 9(583-591행)도 '이전 분석 대비 변화 포인트' 서술에 그친다. 과거 메모에는 진입가·목표가·손절가·확률 시나리오가 구조화되어 저장되는데(memo-writer JSON 규격) 이를 현재가와 대조해 '전회 매수 권고 이후 실현수익 +X%, 목표가 적중/미달, 손절 트리거 준수 여부'를 채점하는 단계가 stock/market/macro 어디에도 없다. 연 100%+ 목표는 승률×손익비 관리가 본질인데, 시스템이 자기 추천의 타율을 모르면 conviction 상향/하향의 근거가 영원히 정성적이고 과잉확신이 교정되지 않는다.",
+   "fix": "T2 프롬프트에 '기존 메모가 있으면 당시 결정·진입가·목표가·손절가 vs 현재가로 실현수익률과 적중 여부를 계산해 표로 보고' 지시를 추가하고, 보고서 섹션 9에 '전회 판정 채점(적중/부분적중/오판 + 실현 R)' 행을 신설. 장기적으로 `cli.py memo scorecard` 같은 집계 도구로 티커·테마별 타율을 추적."
+  },
+  {
+   "title": "momentum 도구의 '12m' 수익률이 데이터 부족 시 짧은 기간 수익률을 12M으로 오라벨",
+   "file": "src/tools/momentum.py:35",
+   "severity": "low",
+   "category": "bug",
+   "detail": "35행: `\"12m\": _ret_pct(close, min(252, len(close) - 1))` — 상장 6개월 종목(약 126봉)이면 실제 6개월 수익률이 '12m' 키로 반환된다. stock.md 모드 B 비교표와 market.md 종목 스캔에서 종목 간 12M 모멘텀을 나란히 비교하는데, 신규 상장주(메가트렌드 테마에 특히 많음)는 기간이 다른 수익률이 같은 열에서 비교돼 모멘텀 순위가 왜곡될 수 있다. momentum_score 자체에는 12m이 미사용이라 점수 오염은 없다.",
+   "fix": "len(close)-1 < 252이면 `\"12m\": None`을 반환하거나 `\"12m_actual_days\"`를 병기해 비교 불가함을 드러낸다."
+  },
+  {
+   "title": "valuation-analyst 프롬프트의 'Bear는 반드시 음수' 지시가 위원회 원칙 6(손절선 비대칭 베팅 예외)과 충돌",
+   "file": ".claude/commands/invest/stock.md:194",
+   "severity": "low",
+   "category": "consistency",
+   "detail": "194행 valuation-analyst 프롬프트: 'Bear Case에는 반드시 음의 수익률(현재가 대비 하락) 시나리오를 포함하세요'(예외 없음). 반면 113행 원칙 6과 637행 Devil's Advocate는 '손절선으로 하방이 구조적으로 제한된 비대칭 베팅이면 모든 시나리오 양수여도 정상 — Bear는 손절선 기준 손실 사용 가능'을 명시한다. 팀원은 무조건 음수 Bear를 만들고 Chair는 예외를 인정하는 이중 기준이라, 손절 규율형 베팅에서 시나리오 확률가중 기대수익이 팀원 산출과 위원회 판정 간에 어긋나고 확률가중 Kelly 입력도 흔들린다.",
+   "fix": "194행에 원칙 6과 동일한 예외 조항('단, 손절선이 명시된 비대칭 베팅이면 Bear를 손절선 기준 손실로 산정 가능')을 병기해 규칙을 일원화."
+  },
+  {
+   "title": "위원회 종합보고서(report.md) 템플릿에 트레일링 스톱·R-multiple 슬롯 부재 — 출구 규율이 summary.md에만 존재",
+   "file": ".claude/commands/invest/stock.md:720",
+   "severity": "low",
+   "category": "consistency",
+   "detail": "CLAUDE.md 메모 규격 8은 R-multiple(비대칭 손익비)과 트레일링 스톱을 필수로 규정하고 memo-writer.md:54-55는 summary.md에 payoff_ratio·trailing_stop_rule 슬롯을 강제한다. 그러나 정작 사용자가 읽고 PDF로 뽑는 Chair의 최종 보고서 템플릿(섹션 11-12, 709-746행)에는 '목표가/손절가' 표(720-725행)에 진입가A/B·목표가·손절가만 있고 트레일링 스톱 규칙과 R-multiple 행이 없다. 추세 추종 전략의 핵심 출구 규율(이익 보호하며 추세 태우기)이 요약 파일에만 남고 심층 보고서·PDF에서 누락돼, 보유 후 관리 국면에서 참조가 끊긴다.",
+   "fix": "섹션 12 '목표가/손절가' 표에 `| 📐 R-multiple | XR | 손절폭 대비 Bull 상방 배수 |`와 `| 🔁 트레일링 스톱 | 규칙 | 신고가 -X% 또는 50일선 이탈 등 |` 두 행을 추가."
+  },
+  {
+   "title": "risk-officer가 포트폴리오·클러스터 집중도를 전혀 보지 않고 종목당 최대 25% 사이징을 권고한다",
+   "file": ".claude/agents/risk-officer.md:57",
+   "severity": "high",
+   "category": "alpha-gap",
+   "detail": "risk-officer.md 전문에 '포트폴리오/보유/클러스터'라는 단어가 한 번도 없다(grep 확인). 사이징 공식은 recommended_pct=(mandate_max×0.5)×conviction으로 단일 티커만 본다(risk_analyzer.py:264). /invest:stock의 T7 프롬프트(.claude/commands/invest/stock.md:204)도 포트폴리오 확인을 지시하지 않는다. 메가트렌드 mandate는 종목당 25%가 천장인데, AI·DC전력 같은 고상관 테마 종목을 연속 분석하면 각각 독립적으로 20%대 권고가 나와 클러스터 합산이 통제 없이 커진다(사용자 메모리의 IREN 사례: 이미 9.2% 보유 + 클러스터 56%인데 신규처럼 사이징). 상관 높은 테마의 동반 급락 시 손절이 동시에 걸려 갭 손실이 배가된다 — 연 100% 목표에서 가장 큰 파산(ruin) 경로.",
+   "fix": "risk-officer.md 분석 프레임워크 0단계로 '사이징 전 필수: `cli.py portfolio --json`과 `cli.py memo list`로 (a) 해당 티커 기보유 여부·평단, (b) 동일 테마 클러스터 합산 비중을 확인하고, 클러스터 합산 상한(예: 단일 테마 40–50%)을 넘으면 recommended_pct를 잔여 한도로 캡'을 추가. stock.md T7 프롬프트에도 동일 지시 삽입."
+  },
+  {
+   "title": "risk-officer가 의존하는 '시나리오 기반 Kelly 교차검증'이 CLI에서 실행 불가능한 죽은 경로다",
+   "file": ".claude/agents/risk-officer.md:87",
+   "severity": "high",
+   "category": "consistency",
+   "detail": "risk-officer.md §10은 '시나리오 기반 Kelly로 확신도 가중 비중을 교차검증'하고 '시나리오 입력이 없으면 도구는 일별 노이즈 Kelly를 반환'이라며 도구에 시나리오를 넣을 수 있음을 전제하고, 출력 예시도 '시나리오 Full Kelly 28%'를 요구한다. 그러나 analyze_risk(scenarios=...)(risk_analyzer.py:98)를 노출하는 CLI 옵션이 없다 — cli.py cmd_risk(103행)의 인자는 mandate/conviction/entry_mode/stop_loss_pct뿐이고 --scenarios는 없다. 따라서 에이전트는 항상 노이즈 Kelly(기대수익 미반영, 늘 양수 가능)만 받고, 25% 집중 베팅을 정당화해야 할 유일한 정량 교차검증이 조용히 사라지거나 에이전트가 수치를 손으로 지어내게 된다.",
+   "fix": "cli.py risk에 `--scenarios '<JSON>'`(또는 stdin) 옵션을 추가해 calc_scenario_kelly로 연결하고, stock.md T7 프롬프트에 'valuation-analyst(T6)의 Bull/Base/Bear 확률·수익률을 --scenarios로 전달'을 명시. 임시로는 risk-officer.md에 calc_scenario_kelly 공식(f*=E[r]/Var)을 직접 계산하라고 지시."
+  },
+  {
+   "title": "밸류에이션 고평가 판정에만 '입증 책임'을 지우고 risk-officer·memo-writer의 거부권까지 제거해, 파이프라인 전체가 매수 결론으로 수렴한다",
+   "file": ".claude/agents/valuation-analyst.md:81",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "valuation-analyst.md:81 '그 근거가 틀렸음을 입증했을 때에만 고평가로 결론낸다' — 고평가에만 입증 책임을 부과(저평가 판정엔 대칭 요구 없음). 같은 파일 91행은 Bull 확률 상향만 지시. risk-officer.md:121 '리스크는 거부권이 아니다', stock.md:204 T7 프롬프트 '역할은 진입 거부권이 아니라 사이징·손절선 입력', memo-writer.md:75 '헤징 결론 배격(확신도 상이면 양 트랙 모두 매수/확대 정렬)'. 결과적으로 진입 이전 단계에서 '회피'를 낼 권한·기준을 가진 에이전트가 사실상 없고, 방어선은 진입 후 손절뿐이다. 손절만으로 방어하는 시스템은 저품질 진입이 늘수록 휩쏘(잦은 -15~20% 손절) 누적으로 기대수익이 깎인다 — 공격 철학과 별개로 진입 필터의 승률을 직접 낮추는 구조.",
+   "fix": "대칭 규칙 추가: (a) valuation-analyst에 '서사가 정당화함' 판정에도 고평가와 동일한 정량 증거 수준(침투율·가속·단위경제 수치) 요구, (b) risk-officer에 한정적 하드 거부권 부여(유동성 부족·회계 적신호·희석 폭탄 등 손절로 방어 불가한 리스크), (c) memo-writer '헤징 배격' 트리거에 '단, T6 확률가중 기대수익 음수 또는 시나리오 Kelly avoid면 예외' 명시."
+  },
+  {
+   "title": "sectors의 '자금유입' 판정은 순수 가격 모멘텀인데, 에이전트들이 이를 모멘텀과 별개의 '자금흐름' 신호로 취급해 conviction을 이중 계상한다",
+   "file": ".claude/agents/market-analyst.md:34",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "sector_scan.py:51-57의 🟢자금유입 판정은 '3M RS>+5%p & 50일선 상회' — ETF 가격 상대강도일 뿐 실제 펀드플로(AUM·발행좌수) 데이터가 전혀 없다. 그런데 market-analyst.md §0과 risk-officer.md:60은 conviction을 '서사 강도 + 모멘텀(RS·신고가) + 자금흐름(섹터 랭킹)'의 합으로 산출하라고 지시한다. 모멘텀과 '자금흐름'이 같은 가격 데이터에서 나오므로 동일 신호가 두 번 가점되어 conviction(0.5–2.0)이 체계적으로 부풀고, 이는 recommended_pct에 선형 반영된다. WebSearch로 실제 ETF fund flows를 확인하라는 지시(market-analyst.md:85)가 있지만 conviction 산식에서 sectors 라벨과 구분되지 않는다.",
+   "fix": "sector_scan의 rating 라벨을 '🟢 모멘텀 유입(가격 RS)'로 정정하고, market-analyst·risk-officer의 conviction 산식에서 '자금흐름' 항목은 반드시 가격 외 증거(ETF 발행좌수 변화, WebSearch fund flow 기사, 스테이블코인 발행 등)로만 채우도록 명시. 없으면 해당 항목 중립 처리."
+  },
+  {
+   "title": "memo-writer의 보유자 권고에 '전량 청산' 선택지가 없어 출구 규율이 구조적으로 막혀 있다",
+   "file": ".claude/agents/memo-writer.md:67",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "memo-writer.md:48,67은 decision_holder를 '비중 유지 / 비중 확대 / 비중 축소' 3분기로 강제한다(CLAUDE.md 메모 규격도 동일). 논거 훼손(thesis broken) 시 필요한 '전량 매도/청산'이 표현 불가능한 선택지 집합이고, 75행의 '헤징 결론 배격' 규칙은 추세 유효 시 양 트랙을 매수로 정렬하라고까지 한다. 손절 규율을 핵심으로 내세우는 시스템(트레일링 스톱·R-multiple)이면서 정작 위원회 최종 산출물에는 SELL이 없다 — 재분석 시점에 서사가 죽은 보유 종목도 최선이 '비중 축소'로 남아 손실 종목이 포트폴리오에 잔류하는 편향을 만든다.",
+   "fix": "decision_holder를 4분기로 확장: '비중 유지 / 비중 확대(트리거 명시) / 비중 축소 / 전량 청산(논거 훼손·손절선 이탈 시)'. CLAUDE.md 메모 포맷 규격 7번 항목도 동일하게 갱신."
+  },
+  {
+   "title": "결정 적중률·실현 R을 집계하는 피드백 루프가 없어 conviction(0.5–2.0) 스케일에 보정 기준이 없다",
+   "file": ".claude/agents/knowledge-agent.md:33",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "knowledge-agent.md의 '사후 평가'(33행)는 같은 티커를 재분석할 때 직전 메모 1건만 평가한다. 전체 메모(data/histories)에 걸쳐 '매수 권고의 승률, 평균 실현 R-multiple, conviction 등급별 실제 성과'를 집계하는 에이전트·태스크가 어디에도 없다. conviction은 recommended_pct에 곱해지는 사실상의 Kelly 배수인데, '무엇이 1.5이고 무엇이 2.0인지'를 과거 성과로 보정할 데이터 루프가 없어 시간이 지나도 사이징 정확도가 개선되지 않는다. 연 100% 목표는 사이징 엣지 누적이 핵심이라 이 공백의 기회비용이 크다.",
+   "fix": "knowledge-agent에 상시 태스크 추가: memo list 전체를 순회해 '결정(매수/확대/회피) vs 이후 주가·손절 결과'를 집계한 트랙레코드 표(승률·평균 R·conviction 구간별 성과)를 산출하고, 이를 T0 conviction 산정 프롬프트의 보정 입력으로 전달. 또는 /invest:review 스킬 신설."
+  },
+  {
+   "title": "knowledge-agent에 WebSearch·Glob 사용을 지시하지만 tools 화이트리스트에 없어 해당 단계가 조용히 불능이다",
+   "file": ".claude/agents/knowledge-agent.md:4",
+   "severity": "medium",
+   "category": "consistency",
+   "detail": "frontmatter는 `tools: Bash, Read, Grep`(4행)인데, 26행은 'Glob, Grep 사용', 49-50행은 'WebSearch로 해당 종목/섹터의 과거 사이클 패턴 검색·과거 고점/저점 PER/PBR 밴드'를 필수 절차(기존 메모 없을 때 5번)로 지시한다. 화이트리스트에 없는 도구는 호출 불가이므로 최초 분석 종목의 역사적 사이클/밸류에이션 밴드 컨텍스트가 매번 조용히 누락되고, 에이전트가 훈련 지식으로 지어낸 밴드를 보고할 위험도 있다.",
+   "fix": "frontmatter를 `tools: Bash, Read, Grep, Glob, WebSearch`로 확장하거나, WebSearch 단계를 제거하고 해당 조사를 valuation-analyst(§5 역사적 밴드, WebSearch 보유)로 명시 위임."
+  },
+  {
+   "title": "risk-officer.md가 crypto mandate를 모른다 — 크립토 트랙에서 적용 mandate 보고·오버라이드 오류 소지",
+   "file": ".claude/agents/risk-officer.md:26",
+   "severity": "medium",
+   "category": "consistency",
+   "detail": "risk-officer.md 26행의 mandate 설명과 111행 출력 형식('적용 mandate: default / megatrend 중 무엇이 적용됐는지')에 crypto 프로파일이 없다. 그러나 /invest:crypto(crypto.md:64,160)는 risk-officer를 spawn해 `cli.py risk <YF_SYM>`을 실행시키고, 도구는 quoteType=CRYPTOCURRENCY면 crypto(max 20%)를 자동 선택한다(risk_analyzer.py:202-206). 에이전트 정의만 보면 crypto 결과를 이상 상태로 오인해 '--mandate megatrend'(max 25%)로 수동 오버라이드하거나, 보고서에 적용 mandate를 잘못 기재할 수 있다 — 크립토 극단 변동성에 25% 사이징이 나가면 손절 갭 리스크가 커진다.",
+   "fix": "risk-officer.md 26행에 crypto 프로파일(quoteType=CRYPTOCURRENCY 자동선택, max 20%, aggressive, 주식 게이트 N/A) 설명을 추가하고, 111행 출력 형식을 'default / megatrend / crypto'로 갱신. 크립토엔 --mandate 오버라이드 금지 명시."
+  },
+  {
+   "title": "earnings 도구의 quarterly_earnings_growth_pct는 YoY인데 에이전트는 QoQ 판단을 지시받아 가속/감속 판정이 틀릴 수 있다",
+   "file": ".claude/agents/earnings-analyst.md:38",
+   "severity": "low",
+   "category": "bug",
+   "detail": "earnings-analyst.md §3은 'YoY + QoQ 성장률: 가속/유지/감속 판단'을 필수로 요구하지만, 도구가 주는 성장 필드는 yfinance `earningsQuarterlyGrowth`(최근 분기의 전년동기 대비 YoY)를 담은 `quarterly_earnings_growth_pct`(earnings_calendar.py:84,189)뿐이고 QoQ 데이터가 없다. 필드명이 'quarterly'라 에이전트가 QoQ로 오독하기 쉽다 — 계절성 있는 종목(예: 반도체·소비)에서 YoY를 QoQ로 읽으면 가속 판정이 정반대로 뒤집혀 §6 '실적 전 비대칭 베팅' 조건(추정치·가속 정렬) 판단을 오염시킨다.",
+   "fix": "필드명을 `quarterly_earnings_growth_yoy_pct`로 바꾸거나 출력에 '(YoY)' 주석을 추가하고, earnings-analyst.md에 'QoQ는 도구 미제공 — quarterly_earnings_growth_pct는 YoY임. QoQ 필요 시 fundamental의 분기 시계열로 계산'을 명시."
+  },
+  {
+   "title": "technical-analyst에 RSI 다이버전스 체크를 필수 지시하지만 도구가 시계열을 주지 않아 검증 불가능한 판정을 요구한다",
+   "file": ".claude/agents/technical-analyst.md:36",
+   "severity": "low",
+   "category": "robustness",
+   "detail": "technical-analyst.md 36행은 '가격 신고가 + RSI 하락 = 약세 다이버전스' 체크를 필수로 지시하지만, technical 도구 출력은 현재 시점의 RSI 값·시그널라인·크로스오버(technical.py:61-82)와 주간 스냅샷뿐이고 RSI/가격 히스토리 시계열을 반환하지 않는다. 다이버전스는 수 주간의 고점 비교가 필요한데 데이터가 없으므로 에이전트가 단일 스냅샷에서 다이버전스 유무를 추측(환각)해 보고할 수 있다 — 강추세 종목에서 존재하지 않는 '약세 다이버전스 경고'가 진입 보류·비중 축소 근거로 오용될 수 있다.",
+   "fix": "technical 도구에 '최근 N주 가격 고점 시 RSI 값' 비교 필드(예: divergence: {price_high_new, rsi_at_highs, verdict})를 추가하거나, 에이전트 지시를 '도구가 다이버전스 필드를 제공할 때만 판정, 미제공 시 N/A 표기'로 완화."
+  },
+  {
+   "title": "내부자 거래 분류가 빈 컬럼('Transaction')을 읽어 전 거래가 'unknown'이 되고 sentiment가 항상 '데이터 없음'으로 나온다",
+   "file": "src/tools/insider_analysis.py:95",
+   "severity": "critical",
+   "category": "bug",
+   "detail": "`trans_text = str(row.get(\"Transaction\", row.get(\"transaction\", \"N/A\")))` 인데, 현 설치 yfinance 1.2.0의 get_insider_transactions() 컬럼을 실제 조회(NVDA)로 확인한 결과 ['Shares','Value','URL','Text','Insider','Position','Transaction','Start Date','Ownership']에서 거래 성격 텍스트는 'Text' 컬럼(예: \"Stock Award(Grant) at price 0.00 per share.\")에 있고 'Transaction' 컬럼은 빈 문자열이다. 따라서 _classify_insider_transaction(\"\")이 모든 행에 'unknown'을 반환 → buy/sell/routine 카운트 전부 0 → 데이터 20건이 있어도 sentiment가 '데이터 없음'(line 134). 이 도구의 핵심 기능(옵션행사/RSU routine vs open-market P/S 구분 — 고성장주 RSU 매도 오판 방지)이 한 번도 작동하지 않으며, 위원회는 내부자 신호를 항상 결측으로 판단한다. 부수적으로 line 99의 'Relation'도 실제 컬럼명 'Position'과 불일치해 relation이 항상 'N/A'다.",
+   "fix": "trans_text를 `row.get(\"Text\") or row.get(\"Transaction\")` 순으로 읽고, relation은 'Position' 컬럼을 우선 조회. 회귀 방지로 '분류 결과가 전부 unknown이면 data_status[\"insider\"]=\"schema_mismatch\"' 같은 가드 추가."
+  },
+  {
+   "title": "news velocity가 yfinance의 10건 캡 때문에 활발한 종목에서 항상 '급증'으로 포화 — 서사 강도 1순위 입력이 무변별 신호",
+   "file": "src/tools/news_search.py:182",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "`ticker.news`는 최근 10건만 반환한다(실측: NVDA 10건, 전부 최근 24시간 내 pubDate). days=14 윈도로 velocity를 계산하면 커버리지가 넓은 종목은 항상 recent_3d=10, prior=0 → line 126에서 velocity_trend='급증' 고정, articles_per_day=10/14=0.71로 무의미. 여기에 line 114의 prior_days=max(days-3,1)=11은 실제 데이터가 커버하는 구간과 무관해 prior_per_day를 과소평가 → '급증' 편향을 증폭한다. 모듈 docstring이 '메가트렌드 투자에서 서사(narrative) 강도의 1순위 입력'이라 명시한 지표가 구조적으로 포화되어 서사 가속/감속을 구분하지 못하고 market-analyst에게 모든 종목이 '서사 급증'이라는 상방 앵커를 준다. src/news.py의 total_news_count도 같은 캡(≤10)에 걸려 14일 수집이라는 표기와 어긋난다.",
+   "fix": "`ticker.get_news(count=100)` 등으로 캡을 올리고 URL 기준 중복 제거. 분모는 '가장 오래된 기사까지의 실제 관측 일수'로 계산하고, 관측 구간이 윈도보다 짧으면 `window_truncated: true`를 표기해 포화 상태를 드러낼 것."
+  },
+  {
+   "title": "티커 없는 테마 쿼리의 폴백이 테마 단어를 심볼로 조회해 무관한 기업(예: 'AI'→C3.ai) 뉴스를 테마 결과로 오염시킨다",
+   "file": "src/tools/news_search.py:175",
+   "severity": "high",
+   "category": "bug",
+   "detail": "keyword_fallback 경로(line 175-177)는 원본 토큰을 그대로 yf.Ticker() 심볼로 시도한다. 'AI 데이터센터' 같은 순수 테마 쿼리에서 'AI'는 _THEME_STOPWORDS로 티커 후보에선 배제해 놓고 폴백에선 다시 심볼로 사용 — 'AI'는 실존 티커(C3.ai)라 C3.ai 종목 뉴스가 반환된다. 이후 키워드 필터도 부분문자열 매칭(line 227: `kw in text`)이라 kw='ai'가 'said/again/email' 등에 매칭되어 거의 전부 통과한다. 결과: 테마 서사 측정값(total_results, news_velocity)이 특정 무관 기업의 뉴스량으로 대체되어 섹터/테마 판단을 왜곡한다.",
+   "fix": "폴백에서 Ticker() 대신 yfinance의 뉴스 검색 API(yf.Search(query).news 계열)를 사용하고, 키워드 매칭은 `\\b` 단어 경계 정규식으로 교체. 폴백 결과에는 출처 심볼이 쿼리 의도와 다를 수 있음을 status로 명시."
+  },
+  {
+   "title": "뉴스 감성 평균이 키워드 0개 기사(0.0점)로 희석되어 라벨이 사실상 항상 '중립' — 서사 신호를 깎는 보수 편향 + 'risk' 등 상용구 부정 편향",
+   "file": "src/news.py:134",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "(a) 모든 기사에 sentiment_score가 부여되므로(키워드 없으면 0.0) `scored_items`는 전 기사와 동일하고, 평균에 0.0이 대거 섞여 avg_sentiment가 0으로 수렴 → ±0.2 임계(line 139-143)를 거의 못 넘어 강한 호재 흐름도 '중립'으로 보고된다. scored_count도 '키워드로 점수화된 기사 수'가 아니라 전체 건수라 오해를 유발. (b) _NEGATIVE_KEYWORDS의 'risk'/'debt'/'concern'은 3,000자 스크래핑 본문(line 123은 body 포함)에 상용구로 거의 항상 등장해 체계적 부정 편향을 만든다. (c) 부분문자열 이진 매칭이라 'slowing growth'가 긍정 1점이 되는 등 방향 오분류. 모멘텀 베팅 시스템에서 감성 신호의 감도가 죽어 진입 확신도 산정에 하방 앵커로 작용한다.",
+   "fix": "평균은 pos+neg>0인 기사만으로 산출하고 scored_count를 실제 키워드 매칭 기사 수로 수정. 'risk'·'debt'·'concern'류 상용구는 제거하거나 제목 매칭으로 한정. 매칭은 단어 경계 + 등장 빈도 가중으로 교체."
+  },
+  {
+   "title": "earnings_dates.head(8)이 미래 분기 행을 포함해 beat_rate 표본이 의도(8분기)의 절반 수준으로 축소되고, '>='로 컨센서스 일치도 beat로 집계",
+   "file": "src/tools/earnings_calendar.py:106",
+   "severity": "medium",
+   "category": "bug",
+   "detail": "yfinance `earnings_dates`는 내림차순으로 미래 예정 분기(Reported EPS=NaN) ~4행이 앞에 온다. head(8)로 자르면 실적이 실제 발표된 과거 분기는 ~4개만 남아 beat_rate_pct가 8분기 이력처럼 보이지만 실은 4표본 통계다(표본 4에서 1번 miss면 75%로 급락 — 노이즈 과대). 또 line 120의 `record[\"eps_actual\"] >= record[\"eps_estimate\"]`는 정확히 일치(meet)도 beat로 세어 beat_rate를 상방 왜곡한다. earnings-analyst가 '서프라이즈 이력'으로 인용하는 수치의 신뢰도·정의가 둘 다 어긋난다.",
+   "fix": "먼저 Reported EPS notna 행으로 필터한 뒤 최근 8개를 취하고, beat 판정은 `>`로 하되 meet는 별도 카운트(beat/meet/miss)로 반환. records에 미래 행 여부 플래그도 추가."
+  },
+  {
+   "title": "earnings_calendar의 서프라이즈 이력·추정치 리비전 조회가 bare except로 조용히 삼켜져 '이력 없음'과 '조회 실패'가 구분 불가",
+   "file": "src/tools/earnings_calendar.py:122",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "line 103-123(earnings_history), 129-141·144-156(eps_trend/eps_revisions)이 모두 `except Exception: pass`로 실패를 무기록 무시한다. 네트워크/스키마 오류 시 beat_rate_pct=None, estimate_revisions={}가 되는데(실제로 이번 감사 중 earnings_dates 조회가 TLS 오류로 실패하는 것을 관찰 — 이 경우 도구는 조용히 빈 이력을 반환한다), 같은 레포의 insider_analysis.py는 data_status/errors로 결측 오판을 막는 규약을 이미 세워둔 것과 불일치. 추정치 리비전 방향은 어닝 모멘텀 판단의 핵심 입력인데, 실패가 '리비전 정체/데이터 없음'으로 읽히면 위원회가 어닝 모멘텀을 실제보다 약하게 평가한다.",
+   "fix": "insider_analysis와 동일하게 data_status={\"history\": ok/empty/error, \"revisions\": ...}와 errors 리스트를 반환 스키마에 추가하고, 에이전트 프롬프트 규약('빈 결과를 중립으로 오판하지 않도록')과 정렬."
+  },
+  {
+   "title": "PDF 표지의 목표가·상승여력·확률가중가가 에이전트 제공 문자열 그대로 인쇄되고 본문/시나리오와 교차검증이 없다",
+   "file": "src/tools/report_pdf.py:495",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "meta JSON의 rating.upside_pct는 target/current로부터 재계산되지 않고, weighted.price도 scenarios(price×prob)로 재계산·검증되지 않은 채 표지에 '확률가중 적정가'로 인쇄된다(line 426, 501-522). LLM이 메타 JSON을 구성하므로 자릿수 오타·환각 숫자가 그대로 증권사 스타일의 권위 있는 표지 숫자가 된다. 또 _num()(line 174)은 '$900–1,400' 같은 범위에서 첫 숫자만 취해 Risk-Reward 차트 좌표가 범위 하단으로 찍히고, upside 색상 판정(line 404)은 문자열 '-' 포함 여부라 유니코드 마이너스('−')면 손실이 녹색(rc-up-pos)으로 표시된다.",
+   "fix": "build() 단계에서 target/current가 파싱되면 upside를 재계산해 불일치 시 경고(또는 재계산값 사용), weighted도 scenarios에서 재계산해 오차 >1%면 stderr 경고. _num은 범위 문자열이면 중앙값 사용, 색상 판정은 파싱된 부호 기준으로."
+  },
+  {
+   "title": "실적 beat 이력만 있고 '발표 후 주가 반응'(post-earnings drift) 추적이 없어 모멘텀 베팅에 결정적인 신호가 누락",
+   "file": "src/tools/earnings_calendar.py:99",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "연 100%+ 모멘텀 전략에서 어닝 관련 알파는 'beat 여부'가 아니라 'beat에 시장이 어떻게 반응했나'(beat인데 팔리면 기대 소진=출구 신호, miss인데 오르면 바닥 신호)와 발표 후 드리프트다. 현재 도구는 EPS Estimate/Reported/Surprise(%)만 수집하고 발표일 전후 가격 반응(T+1 갭, T+5 수익률)을 전혀 계산하지 않아, earnings-analyst가 '4/4 beat'를 무조건 긍정 근거로 인용하는 앵커링이 생긴다. 가격 데이터는 같은 레포 technical/momentum 경로로 이미 접근 가능한데 결합이 없다.",
+   "fix": "earnings_history 각 record에 yf history로 발표일 T+1 갭 수익률과 T+5 누적 수익률을 추가하고, 'beat-and-fade'(beat인데 T+1 음수) 카운트를 요약 필드로 제공."
+  },
+  {
+   "title": "뉴스 수집에서 발행일 파싱 실패/누락 기사가 기간 필터를 우회하고, 동일 기사 중복 제거가 없다",
+   "file": "src/news.py:97",
+   "severity": "low",
+   "category": "robustness",
+   "detail": "pubDate 파싱 실패(line 97-98) 또는 부재(line 99-100) 시 기사가 cutoff 검사 없이 수집되어 오래된 뉴스가 14일 감성 평균에 섞일 수 있다. 또 cutoff는 로컬 naive now(line 79)인데 pub_dt는 UTC라 KST 기준 최대 9시간 어긋난다. URL/제목 기반 중복 제거가 없어 같은 스토리의 신디케이트 재발행이 감성·경쟁사 언급 카운트를 중복 가중한다(news_search.py의 다중 티커 검색 경로도 동일).",
+   "fix": "파싱 실패 기사는 `date_unverified: true` 플래그를 달아 감성 평균에서 제외하거나 별도 버킷으로. cutoff를 datetime.now(timezone.utc) 기준으로 통일하고, canonicalUrl 기준 dedupe 추가."
+  },
+  {
+   "title": "경쟁사 언급 카운트가 부분문자열 매칭이라 'ARM'이 harm/farm/warming, 'Ford'가 afford, 'Meta'가 metal에 매칭되어 과대 집계",
+   "file": "src/news.py:155",
+   "severity": "low",
+   "category": "bug",
+   "detail": "`all_text.lower().count(comp.lower())`는 단어 경계 없이 센다. NVDA의 경쟁사 'ARM'은 3,000자 본문×10건에서 harm/farm/army/warming 등에 다수 매칭되고, TSLA의 'Ford'는 afford(-able)에 매칭된다. competitor_mentions가 실제 경쟁 구도 언급과 무관하게 부풀려져 market-analyst의 경쟁 강도 해석을 왜곡한다.",
+   "fix": "`re.findall(rf\"\\b{re.escape(comp)}\\b\", all_text, re.IGNORECASE)`로 단어 경계 매칭으로 교체."
+  },
+  {
+   "title": "PDF 이모지 처리에서 방향 의미 이모지(📈📉🔺🔻)가 매핑 없이 광역 제거되어 표 셀의 판정 신호가 조용히 사라지고, RR 차트가 통화 불문 '$'를 하드코딩",
+   "file": "src/tools/report_pdf.py:78",
+   "severity": "low",
+   "category": "bug",
+   "detail": "_emoji_maps()의 pre 테이블(line 87-93)에는 🟢🟡🔴✅❌⚠⬆⬇ 등만 있고 📈(U+1F4C8)·📉·🔺·🔻·🚀는 없어서 _EMOJI_STRIP(line 78, U+1F000-1FAFF 광역)에 걸려 통째로 제거된다. report.md 표에서 셀 내용이 이모지 단독(예: '📉')이면 PDF에서 빈 셀이 되어 방향 판정 정보가 '이모지는 색상 기호로 치환'이라는 CLAUDE.md 규약과 달리 소실된다. 또 _risk_reward_svg의 fmt(line 207-208)가 `${p:,.0f}`로 '$'를 하드코딩해 005930.KS 같은 원화 종목 표지 차트에 '$85,000'으로 표기된다.",
+   "fix": "pre 맵에 📈→S(7)(▲), 📉→S(8)(▼), 🔺→▲, 🔻→▼, 🚀→▲ 매핑 추가. fmt는 current_price/target_price 문자열에서 통화 기호(₩/원/$)를 감지해 그대로 사용."
+  },
+  {
+   "title": "main.py가 레거시 3종(재무·기술·뉴스)만 통합해 모멘텀·리스크·어닝 없는 '빠른 분석'이 얇은 판단 경로로 남아 있다",
+   "file": "src/main.py:13",
+   "severity": "low",
+   "category": "consistency",
+   "detail": "main.py는 fundamental/technical/collect_news만 호출하고, 공격 전략의 핵심 입력인 momentum(RS·신고가 돌파), risk(포지션 사이징), earnings(임박 이벤트), insider를 포함하지 않는다. CLAUDE.md가 '빠른 통합 분석 (기존 코드)'로 공식 노출하므로 에이전트/사용자가 이 경로로 빠른 결론을 내면 모멘텀 트랙 개편(2026-06-17) 이전의 그림만 보게 된다. 또 개별 모듈 실패는 errors 배열에만 남아(line 42-45) 뉴스 수집 실패가 '뉴스 이슈 없음'처럼 읽힐 수 있다.",
+   "fix": "main.py에 momentum·earnings 요약을 추가하거나, 최소한 출력 상단에 'momentum/risk 미포함 — 진입 판단에는 cli.py momentum/risk 필수' 안내 필드를 넣고 CLAUDE.md 표기와 정렬."
+  },
+  {
+   "title": "net liquidity 계산에서 TGA(WTREGEN) 단위 오류 — billions를 millions로 취급해 1000분의 1로 축소, net liquidity가 ~$8,000억 과대·TGA 변동이 트렌드에서 사실상 소거됨",
+   "file": "src/tools/macro_data.py:242",
+   "severity": "critical",
+   "category": "bug",
+   "detail": "`net_bn = ((w / 1000.0) - (t_al / 1000.0) - r_al)` — 주석(224행)은 'WALCL·WTREGEN은 millions'라 하나, FRED 문서 기준 WALCL=Millions of USD, WTREGEN(TGA 주평균)=Billions of USD, RRPONTSYD=Billions of USD다(표준 공식: WALCL/1000 − WTREGEN − RRPONTSYD, $bn). WTREGEN을 1000으로 나누면 TGA ~$800bn이 ~$0.8bn으로 축소되어 (1) net_liquidity_usd_tn 레벨이 ~0.8조 달러 과대, (2) 252행 `tga_usd_bn`이 ~0.8로 출력(실행 시 즉시 확인 가능한 지문), (3) net_4w_change_pct(±0.5% 임계로 risk_score ±1 기여)가 사실상 WALCL−RRP만 반영 — 주간 net liquidity의 지배적 드라이버인 TGA 증감(세수·국채발행·부채한도 후 TGA 재적립 = 유동성 흡수)을 통째로 놓친다. 도구 스스로 'risk asset 베타의 1차 드라이버'라 부르는 신호가 틀린 방향/중립으로 나와 macro 레짐 판정과 자산배분 틸트를 왜곡한다. (본 환경에서 FRED 접속 불가로 라이브 재검증은 못 했으나, 실행 결과의 tga_usd_bn≈0.8 vs 실제 TGA ~$800bn으로 1줄 확인 가능)",
+   "fix": "242행을 `((w / 1000.0) - t_al - r_al)`로 수정하고 252행 `tga_usd_bn`은 `round(float(t.iloc[-1]), 1)`로 변경. 224행 주석도 'WALCL=millions, WTREGEN·RRPONTSYD=billions'로 정정. 수정 후 tga_usd_bn이 700~900대 값인지 sanity check 추가 권장(예: tga<10이면 단위 이상 경고)."
+  },
+  {
+   "title": "YF_OVERRIDE에 GRT·STX·IMX 누락 — yfinance_symbol이 시총 0의 죽은 동명 토큰(Golden Ratio Token·Stox·Impermax)을 가리켜 technical/risk/momentum이 '다른 자산'을 분석 (라이브 검증됨)",
+   "file": "src/tools/crypto_data.py:51",
+   "severity": "high",
+   "category": "bug",
+   "detail": "라이브 확인 결과: `GRT-USD`=Golden Ratio Token(mcap 0), `STX-USD`=Stox(mcap 0), `IMX-USD`=Impermax(mcap 0)이고 정답은 `GRT6719-USD`(The Graph), `STX4847-USD`(Stacks), `IMX10603-USD`(Immutable)다. 세 심볼 모두 ALIAS_MAP(42행)에는 있으나 YF_OVERRIDE(51-56행)에는 없어 `_yf_symbol()`이 '{base}-USD'를 반환하고, crypto_overview의 caveats(434행)가 그 심볼로 `cli.py technical|risk|momentum` 실행을 지시한다 — 51행 주석이 경고하는 바로 그 트랩('검증 없이 {base}-USD를 쓰면 다른 자산을 분석')이 재현된다. 죽은 토큰의 가격·변동성·모멘텀으로 손절선/포지션 사이징이 산출되면 완전히 무의미한 매매 판단이 나온다.",
+   "fix": "YF_OVERRIDE에 `\"GRT\": \"GRT6719-USD\", \"STX\": \"STX4847-USD\", \"IMX\": \"IMX10603-USD\"` 추가. 근본 대책으로 crypto_overview에서 yfinance 가격 vs CoinGecko 가격 교차검증(±20% 이탈 시 yfinance_symbol=None + 경고)을 넣어 하드코딩 목록 밖 충돌(검색 경로로 해석된 신규 코인)도 구조적으로 차단."
+  },
+  {
+   "title": "L1 체인 P/F가 체인 위 전체 dApp 수수료 합계를 분모로 사용 — ETH 홀더에 귀속되지 않는 Lido/Aave 등 540개 프로토콜 수수료가 섞여 P/F가 수 배 과소(저평가 착시) (라이브 검증됨)",
+   "file": "src/tools/crypto_data.py:242",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "`_defillama_chain`이 `/overview/fees/{chain}?dataType=dailyFees`의 total24h를 쓰는데, 라이브 확인 결과 Ethereum total24h=$10.0M은 540개 프로토콜(Saturn $2.3M, Maple $1.3M, Lido $1.0M, Aave $0.9M...)의 합산이다. 이 수수료는 LDO·AAVE 등 각 토큰 홀더에 귀속되지 토큰(ETH)에 귀속되지 않는다. 385-392행 `p_f_ratio = mcap / fee_ann`은 'L1의 경제활동 대비 밸류'가 아니라 '체인 생태계 전체 앱 매출 대비 L1 시총'이 되어, DeFi 생태계가 큰 체인일수록 P/F가 체계적으로 낮게(저평가로) 나오고 체인 간 상대비교('낮을수록 저평가' 노트, crypto.md의 '동종 상대비교' 지시)가 왜곡된다. 알트 L1 진입 판단에서 밸류에이션 근거가 수 배 틀어지는 문제.",
+   "fix": "체인 자체 수수료(가스)는 `/summary/fees/{gecko_id}`(프로토콜 엔트리로서의 체인, 예: slug 'ethereum')를 우선 조회하거나 overview 응답의 protocols 목록에서 체인 자체 엔트리만 필터링해 사용. 생태계 전체 수수료는 별도 필드(ecosystem_fees)로 분리 표기해 P/F 분모와 혼동하지 않게 한다."
+  },
+  {
+   "title": "신용 신호(HYG/LQD 가격비율)가 듀레이션 미스매치로 금리 방향에 오염 — 금리 하락 국면(골디락스·완화 피벗)에서 스프레드 안정에도 '와이드닝(위험회피) -1'을 발화",
+   "file": "src/tools/macro_data.py:456",
+   "severity": "high",
+   "category": "methodology",
+   "detail": "HYG 듀레이션 ~3년 vs LQD ~8년. 3개월간 금리가 하락하면 신용스프레드가 그대로여도 LQD가 듀레이션으로 아웃퍼폼해 hyg_lqd_3m<-1 → spread_signal='widening(위험회피)'(461-465행) 및 risk_score -1(551-552행)이 기계적으로 발생한다. 반대로 금리 급등기엔 스프레드 확대에도 '타이트닝 +1'이 나올 수 있다. 즉 완화 피벗+골디락스(공격 베팅의 최적 국면)에서 리스크오프 쪽으로, 긴축 스트레스에서 리스크온 쪽으로 미는 역방향 편향 — 'proxy(OAS 아님)' 라벨은 있으나 부호가 체계적으로 뒤집히는 조건은 미공지다. hyg_tlt 비율은 계산만 되고(453·455·457행) 점수에 미사용이며 듀레이션 미스매치는 더 크다.",
+   "fix": "모듈에 이미 있는 `_fetch_fred`로 FRED `BAMLH0A0HYM2`(HY OAS, 일간·키리스)를 받아 실제 OAS 레벨/3M 변화로 spread_signal과 risk_score 기여를 산출(FRED 실패 시에만 가격비율 폴백 + method 라벨 구분). 폴백 유지 시엔 듀레이션 매칭 쌍(HYG/IEI)으로 교체."
+  },
+  {
+   "title": "CoinGecko detail(/coins/{id}) 실패 시 categories=[]로 조용히 '기타/토큰' 아키타입 오분류 — 429가 흔한 무료티어에서 L1/DeFi가 엉뚱한 평가 프레임워크로 분석되고 errors에도 기록 안 됨",
+   "file": "src/tools/crypto_data.py:345",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "`det = _get_json(...) or {}`(345-346행) 실패가 errors에 기록되지 않고 categories가 빈 리스트가 되어 `_classify`(194행)가 SOL·AVAX 같은 L1도 '기타/토큰'으로 판정한다. crypto.md 105행('아키타입별 밸류에이션 의무: L1=P/F·P/S·실질수익률...')과 T3 프롬프트가 이 archetype으로 멀티플 프레임을 선택하므로, CoinGecko 무료티어에서 흔한 429 한 번(다중 호출 구조상 rate-limit 취약)으로 crypto-analyst가 잘못된 프레임워크로 평가하는데 출력 어디에도 '분류 근거 데이터 실패' 신호가 없다. markets 실패만 errors에 기록(342행)되는 것과 비대칭.",
+   "fix": "det가 falsy면 `errors.append({\"source\": \"coingecko/detail\", \"error\": \"카테고리/커뮤니티 수집 실패 — archetype 불확실\"})` 추가하고 archetype_note에 '카테고리 미수집 — 분류 신뢰 낮음, WebSearch 확인' 플래그를 병기. DefiLlama 체인 매칭 성공 시(dl.kind=='chain') archetype을 L1로 승격하는 2차 판정도 가능."
+  },
+  {
+   "title": "FRED net liquidity 실패가 regime.missing_inputs/degraded에 미반영 — '1차 드라이버' 누락 상태의 risk_score가 정상 산출인 것처럼 보고돼 일자 간 점수 비교·레짐 판정 신뢰도 왜곡",
+   "file": "src/tools/macro_data.py:599",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "liquidity가 None이면(334-343행) risk_score에서 net liquidity 항(599-606행)이 그냥 빠지는데, VIX·credit 등 다른 입력과 달리 `missing.append(...)`가 없어 `regime.degraded=False`·`missing_inputs=[]`로 나온다. rating_rule(734-737행)은 net liquidity를 공식 구성요소로 광고하므로, macro-strategist는 'liquidity 중립(0점)'과 'liquidity 미상(누락)'을 구분할 수 없다. FRED는 이 환경에서도 실제 접속 불가를 확인했을 만큼 실패가 흔한 소스라, 유동성 수축기(가장 위험한 국면)에 -1이 조용히 빠져 risk_score가 한 단계 낙관적으로 나올 수 있다.",
+   "fix": "606행 else 블록 아래에 `else: missing.append(\"net_liquidity\")`를 추가(INVEST_MACRO_FRED==0 의도적 비활성 시에는 제외)해 degraded/missing_inputs에 반영하고, drivers에 'net liquidity 미수집 — WebSearch 보강 필요' 한 줄을 남긴다."
+  },
+  {
+   "title": "인플레축이 명목 10년물 변화(±25bp)를 1차 신호로 사용 — 실질금리 주도 금리 상승(성장·재정 프리미엄)을 인플레로 오인해 4분면이 REFLATION/STAGFLATION으로 오판",
+   "file": "src/tools/macro_data.py:624",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "inflation_axis(624-633행)는 명목 ^TNX 3M 변화>+25bp OR 유가>+10% OR 구리>+10%로 +1을 준다. 명목금리 상승은 브레이크이븐(인플레 기대)이 아니라 실질금리·텀프리미엄 상승(성장 강세·국채 수급)일 수 있고, 구리 상승은 이미 growth_axis(619행)의 +신호이기도 해 성장 신호가 인플레축까지 중복 점화한다(구리 랠리 하나로 REFLATION 확정 방향). 결과적으로 골디락스(디스인플레 성장 — 성장주 집중 베팅의 최적 분면)가 REFLATION으로, 성장 둔화+실질금리 상승이 STAGFLATION으로 잘못 라벨링되어 macro-strategist의 자산배분 틸트(분면 기반)가 어긋난다. TIP 시계열은 이미 수집 중인데 인플레축에 미사용.",
+   "fix": "브레이크이븐 방향 프록시를 인플레축 1차 신호로: 이미 있는 TIP과 IEF(또는 ^TNX 레벨−TIP 추세 결합)로 기대인플레 방향을 분리하거나, FRED `T10YIE`(10y 브레이크이븐, 키리스)를 `_fetch_fred`로 받아 3M 변화 ±15bp를 기준으로 사용. 구리는 성장축 전용으로 두고 인플레축에서 제외해 축 간 중복 점화를 없앤다."
+  },
+  {
+   "title": "크립토 섹터 로테이션이 24시간 시총변화 단일 지표 랭킹 — 초단기 노이즈·마이크로캡 카테고리가 상위를 점해 '발굴 엔진'으로서 신호 품질이 주식 sectors(1m/3m/6m) 대비 크게 떨어짐",
+   "file": "src/tools/crypto_data.py:467",
+   "severity": "medium",
+   "category": "methodology",
+   "detail": "sector_rotation(464-475행)은 `market_cap_change_24h` 하루 변화만으로 정렬하고 시총 하한 필터가 없다. 하루 ±30% 튀는 수백만 달러짜리 카테고리가 상위 8개를 채우면 '어느 크립토 섹터로 돈이 도는가'(CLAUDE.md의 발굴 엔진 정의)가 사실상 랜덤 노이즈가 된다. 주식 쪽 sector_scan은 21/63/126일 다기간 수익률로 지속성 있는 자금흐름을 판정하는 것과 규격 불일치 — 모멘텀 전략에서 하루 스파이크 추종은 되레 역선택(하이프 꼭지 진입) 위험.",
+   "fix": "최소 시총 필터(예: category market_cap > $1bn) 적용 후, 상위 후보 카테고리에 한해 `/coins/markets?category={id}&price_change_percentage=7d,30d`로 구성코인 시총가중 7d/30d 수익률을 산출해 다기간 랭킹으로 교체. 24h는 보조 컬럼으로 강등하고 note에 지속성 기준을 명시."
+  },
+  {
+   "title": "resolve_id 전면 실패 시 소문자 base를 CoinGecko id로 '추측'하고 파이프라인이 그대로 진행 — 추측 id가 우연히 다른 코인과 일치하면 오자산의 토크노믹스가 무경고 출력",
+   "file": "src/tools/crypto_data.py:186",
+   "severity": "medium",
+   "category": "robustness",
+   "detail": "186-188행 폴백은 `id=low.replace(\" \", \"-\")`로 추측하고 method 문자열에만 불확실을 표기한다. crypto_overview는 이 id로 markets/detail/DefiLlama를 그대로 조회하는데, 추측 id가 '유효하지만 다른 코인'(CoinGecko id는 심볼과 무관한 슬러그 — 예: 심볼 SUN의 id는 'sun-token'이고 'sun'은 별개 자산)이면 342행의 '데이터 없음' 에러도 안 뜨고 정상 데이터처럼 출력된다. resolved.method 딥필드 하나만이 단서라 crypto-analyst가 놓치기 쉽고, 잘못된 시총·FDV·수익률로 밸류에이션·사이징이 이어진다.",
+   "fix": "method가 fallback(guess)일 때는 markets 조회 성공 여부와 무관하게 top-level에 `\"identity_uncertain\": true` 플래그와 errors 엔트리를 추가하고, caveats 첫 줄에 'id 추측 — 심볼·이름 일치 육안 확인 필수'를 배치. 반환된 m['symbol']이 base와 불일치하면 결과를 폐기하고 에러로 처리."
+  },
+  {
+   "title": "매크로 레짐 스냅샷 이력이 없어 '레짐 전환'(risk_score 부호 전환·분면 이동) 탐지 불가 — 공격 전략에서 가장 액션어블한 이벤트가 시스템적으로 포착 안 됨",
+   "file": "src/tools/macro_data.py:307",
+   "severity": "medium",
+   "category": "alpha-gap",
+   "detail": "macro_dashboard는 매 실행 무상태(stateless)로 현재 시점 라벨만 산출한다. 연 100%+ 모멘텀 전략에서 알파는 레짐 '레벨'이 아니라 '전환'(RISK-OFF→ON 전환 초입 레버리지 확대, quadrant 이탈 시 섹터 로테이션)에서 나오는데, 이전 실행의 risk_score/quadrant/cycle_stage를 저장·비교하는 코드가 없어 macro-strategist는 전환 여부를 기억에 의존해 판단해야 한다. memory의 'market 스킬 macro 레이어' 교훈(유동성/신용 이벤트를 놓친 진단)과 같은 계열 — 전환 감지가 없으면 매번 늦게 반응한다.",
+   "fix": "실행마다 `data/macro_snapshots/YYYY-MM-DD.json`(risk_score·quadrant·cycle_stage·주요 drivers)을 append 저장하고, 출력에 `regime_change: {score_prev, score_delta, quadrant_prev, flipped: bool, days_since_last}` 블록을 추가해 직전 스냅샷 대비 전환을 결정론적으로 표기."
+  },
+  {
+   "title": "risk_score의 구조적 risk-on 편향 — VIX 15-20 '정상'에도 +1(안주 <15와 동점), QQQ/SPY는 +1만 가능하고 감점 없음 → 평시 기본점수 +1로 RISK-ON 문턱이 실질 +2",
+   "file": "src/tools/macro_data.py:536",
+   "severity": "low",
+   "category": "methodology",
+   "detail": "538-540행에서 VIX<15와 15-20이 동일하게 +1이라 평온한 시장은 무조건 +1에서 시작하고, 588-592행 QQQ/SPY는 성장주도 시 +1만 있고 가치·방어 주도 시 감점이 없다(합산 상방 +7 / 하방 -8의 비대칭). RISK-ON(≥+3)은 실질 2개 확증으로, RISK-OFF(≤-3)는 4개 악재 동시 점등으로 도달해 라벨이 리스크온 쪽으로 기운다. macro-strategist.md 56행이 pro-cyclical 편향을 인지하고 침체 패널 우선 규칙을 두긴 했으나, 이는 침체 국면 한정이며 평시 과대 리스크온(레버리지·집중 확대 근거로 쓰임)은 미보정. 공격 전략이라도 점수 자체는 중립적으로 재고 자세는 mandate에서 기울이는 게 맞다.",
+   "fix": "VIX 15-20을 0점으로 조정(complacent만 +1)하고 QQQ/SPY 3M<-2%에 -1을 부여해 상하 대칭화. 변경 시 rating_rule 문자열과 macro-strategist.md의 점수 해석 문구를 함께 갱신."
+  },
+  {
+   "title": "CLAUDE.md가 `cli.py crypto` 출력에 MVRV 포함으로 기술하나 도구는 MVRV 필드 자체를 반환하지 않음(WebSearch 보강 노트만) — 에이전트가 존재하지 않는 수치를 도구 출력에서 찾게 되는 규격 불일치",
+   "file": "CLAUDE.md:38",
+   "severity": "low",
+   "category": "consistency",
+   "detail": "CLAUDE.md 38행은 crypto 커맨드를 '아키타입별 평가멀티플 P/F·NVT·MVRV·S2F'로 설명하지만 crypto_data.py는 MVRV를 산출하지 않고 396-397행 note로 'MVRV·실현가·SOPR은 키리스 미제공 — WebSearch 보강'만 명시한다. crypto.md 268행 등은 올바르게 '(WebSearch)' 출처를 달아놨으나, CLI 레퍼런스인 CLAUDE.md만 불일치라 위원회 CLI-폴백 경로(메모리의 committee-cli-fallback 케이스)에서 에이전트가 도구 출력에 MVRV가 있다고 가정하고 누락을 N/A 처리하거나 재호출을 낭비할 수 있다.",
+   "fix": "CLAUDE.md 38행을 'P/F·NVT·S2F (MVRV·SOPR는 WebSearch 보강)'으로 정정해 도구 실제 출력과 일치시킨다."
+  }
+ ],
+ "note": "검증 통과 102/108; 병합·랭킹된 최종본은 audit-2026-07-02.md"
+}

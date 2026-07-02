@@ -20,6 +20,25 @@ def _safe_round(value, digits=2):
         return None
 
 
+def _row_text(row, *keys, default="N/A"):
+    """행에서 후보 컬럼들 중 첫 번째로 비어있지 않은 문자열 값을 반환한다.
+
+    yfinance 1.2.0의 get_insider_transactions()는 거래 성격 텍스트를
+    'Text' 컬럼에, 직책을 'Position' 컬럼에 담는다 ('Transaction'/'Relation'은
+    빈 문자열이거나 부재). NaN/빈 문자열은 건너뛴다.
+    """
+    for key in keys:
+        val = row.get(key)
+        if val is None:
+            continue
+        if isinstance(val, float) and math.isnan(val):
+            continue
+        text = str(val).strip()
+        if text and text.lower() != "nan":
+            return text
+    return default
+
+
 # routine(비방향성) 내부자 거래로 분류할 키워드.
 # 옵션행사(M), grant/award(A), 세금납부용 처분(F), 증여(gift), 10b5-1 사전약정 등.
 _ROUTINE_KEYWORDS = (
@@ -92,11 +111,13 @@ def analyze_insider(ticker_symbol: str) -> dict:
                     shares_int = int(shares_val) if shares_val is not None and not (isinstance(shares_val, float) and math.isnan(shares_val)) else 0
                 except (TypeError, ValueError):
                     shares_int = 0
-                trans_text = str(row.get("Transaction", row.get("transaction", "N/A")))
+                # yfinance 1.2.0: 거래 성격 텍스트는 'Text' 컬럼 ('Transaction'은 빈 문자열)
+                trans_text = _row_text(row, "Text", "Transaction", "transaction")
                 classification = _classify_insider_transaction(trans_text)
                 trans = {
-                    "insider": str(row.get("Insider", row.get("insider", "N/A"))),
-                    "relation": str(row.get("Relation", row.get("relation", "N/A"))),
+                    "insider": _row_text(row, "Insider", "insider"),
+                    # yfinance 1.2.0: 직책은 'Position' 컬럼 ('Relation'은 부재)
+                    "relation": _row_text(row, "Position", "Relation", "relation"),
                     "date": str(row.get("Start Date", row.get("startDate", row.get("date", "N/A")))),
                     "transaction": trans_text,
                     "shares": shares_int,
@@ -111,7 +132,15 @@ def analyze_insider(ticker_symbol: str) -> dict:
                     sell_count += 1
                 elif classification == "routine":
                     routine_count += 1
-            data_status["insider"] = "ok"
+            # 전 행이 unknown이면 컬럼 스키마 변경 의심 — '중립/결측'으로 오판하지 않도록 가드
+            if insider_transactions and all(t["classification"] == "unknown" for t in insider_transactions):
+                data_status["insider"] = "schema_mismatch"
+                errors.append(
+                    "insider_transactions: 전 거래 분류 unknown — yfinance 컬럼 스키마 변경 의심 "
+                    f"(실제 컬럼: {list(insider_df.columns)})"
+                )
+            else:
+                data_status["insider"] = "ok"
         else:
             data_status["insider"] = "empty"
     except Exception as e:
@@ -122,6 +151,8 @@ def analyze_insider(ticker_symbol: str) -> dict:
     # open-market 순매수/순매도로만 판정 — 고성장주 RSU 매도 오판 방지
     if data_status.get("insider") == "error":
         insider_sentiment = "데이터 없음 (조회 실패)"
+    elif data_status.get("insider") == "schema_mismatch":
+        insider_sentiment = "판정 불가 (거래 텍스트 스키마 불일치)"
     elif buy_count > sell_count:
         insider_sentiment = "매수 우위"
     elif sell_count > buy_count:

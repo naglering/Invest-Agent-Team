@@ -34,6 +34,9 @@ data/histories/*
 data/portfolio.md
 data/positions.md
 data/theses.md
+data/trades.jsonl
+data/alerts/
+data/macro_snapshots/
 
 # ETF holdings 라이브 캐시 (자동 생성·갱신)
 data/cache/

@@ -90,6 +90,8 @@ def _emoji_maps():
         "⬆️": S(7), "⬆": S(7), "⬇️": S(8), "⬇": S(8),
         "➖": S(9), "⭐": S(10), "☆": S(11),
         "➡️": S(12), "➡": S(12), "🔼": S(7), "🔽": S(8),
+        # 방향 의미 이모지 — 광역 제거(_EMOJI_STRIP)에 걸려 표 셀 판정이 소실되지 않게 ▲▼로 치환
+        "📈": S(7), "📉": S(8), "🔺": S(7), "🔻": S(8),
     }
     post = {
         S(1): '<span class="sig g">●</span>', S(2): '<span class="sig a">●</span>',
@@ -168,14 +170,36 @@ def _wrap_exhibits(html: str) -> str:
 # Risk-Reward 세로축 차트 (인라인 SVG)
 # ──────────────────────────────────────────────────────────────────────────
 def _num(s) -> float:
-    """'$1,100', '+44%', '$900–1,400' 등에서 첫 숫자를 추출."""
+    """'$1,100', '+44%', '$900–1,400' 등에서 첫 숫자를 추출 (U+2212 마이너스도 부호로 인식)."""
     if s is None:
         return None
-    m = re.search(r"-?\d[\d,]*\.?\d*", str(s).replace(",", ""))
+    m = re.search(r"-?\d[\d,]*\.?\d*", str(s).replace("−", "-").replace(",", ""))
     return float(m.group(0)) if m else None
 
 
-def _risk_reward_svg(scenarios: list, current_price) -> str:
+def _ccy_symbol(ticker: str, meta: dict) -> str:
+    """표지·차트 통화 기호 감지 — 메타 currency → 가격 문자열 기호 → 티커 접미사 순."""
+    cur = str(meta.get("currency") or "").upper()
+    if cur in ("KRW", "₩", "원"):
+        return "₩"
+    if cur in ("USD", "$"):
+        return "$"
+    rating = meta.get("rating") or {}
+    for s in (rating.get("current_price"), rating.get("target_price")):
+        if s is None:
+            continue
+        s = str(s)
+        if "₩" in s or "원" in s:
+            return "₩"
+        if "$" in s:
+            return "$"
+    t = (ticker or "").upper()
+    if t.endswith(".KS") or t.endswith(".KQ"):  # 한국 상장 종목
+        return "₩"
+    return "$"
+
+
+def _risk_reward_svg(scenarios: list, current_price, ccy: str = "$") -> str:
     """Bull/Base/Bear 세로 가격축 차트 SVG. MS Risk-Reward 프레임워크 스타일."""
     if not scenarios:
         return ""
@@ -205,7 +229,7 @@ def _risk_reward_svg(scenarios: list, current_price) -> str:
         return top + (hi - price) / span * plot_h
 
     def fmt(p):
-        return f"${p:,.0f}" if p is not None else "—"
+        return f"{ccy}{p:,.0f}" if p is not None else "—"
 
     parts = [f'<svg viewBox="0 0 {W} {H}" class="rr-svg" xmlns="http://www.w3.org/2000/svg">']
     # 세로 축
@@ -401,7 +425,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
       <div class="rc-act">{{ rating.action or "—" }}{% if rating.action_en %}<small>{{ rating.action_en }}{% if rating.stance %} · {{ rating.stance }}{% endif %}</small>{% endif %}</div>
       {% if rating.target_price %}<div class="rc-row"><span>목표주가</span><b>{{ rating.target_price }}</b></div>{% endif %}
       {% if rating.current_price %}<div class="rc-row"><span>현재가</span><b>{{ rating.current_price }}</b></div>{% endif %}
-      {% if rating.upside_pct %}<div class="rc-row"><span>상승여력</span><span class="{{ 'rc-up-neg' if '-' in rating.upside_pct else 'rc-up-pos' }}">{{ rating.upside_pct }}</span></div>{% endif %}
+      {% if rating.upside_pct %}<div class="rc-row"><span>상승여력</span><span class="{{ 'rc-up-neg' if upside_neg else 'rc-up-pos' }}">{{ rating.upside_pct }}</span></div>{% endif %}
       {% if rating.position_pct %}<div class="rc-row"><span>권고비중</span><b>{{ rating.position_pct }}</b></div>{% endif %}
     </div>
     {% endif %}
@@ -435,7 +459,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     </div>
 
     <div class="cover-side">
-      {% if rating and rating.conviction_stars is not none %}
+      {% if rating and rating.get('conviction_stars') is not none %}
       <div class="panel">
         <div class="panel-h">확신도 (CONVICTION)</div>
         <div class="panel-b conv-wrap">
@@ -490,15 +514,75 @@ def _default_disclaimer() -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# 표지 숫자 검산 — LLM 구성 메타의 오타·환각 숫자가 표지에 인쇄되는 것 방지
+# ──────────────────────────────────────────────────────────────────────────
+def _fmt_pct(v: float) -> str:
+    return f"{v:+.1f}%"
+
+
+def _verify_cover_numbers(meta: dict, ccy: str):
+    """상승여력·확률가중 적정가를 목표가/현재가·scenarios로 재계산해 검산.
+
+    오차 초과(상승여력 >1%p, 가중가 상대오차 >1%) 시 soft_warnings에 기록하고
+    재계산값으로 교체한다. 메타에 값이 없으면 재계산값으로 채운다.
+
+    Returns:
+        (검산 반영된 meta, soft_warnings 리스트, cover_check 상세 dict)
+    """
+    meta = dict(meta)
+    warnings = []
+    check = {}
+    rating = dict(meta.get("rating") or {})
+    target = _num(rating.get("target_price"))
+    cur = _num(rating.get("current_price"))
+
+    # ① 상승여력(upside) = 목표가/현재가 - 1
+    if target is not None and cur:
+        calc = (target / cur - 1.0) * 100.0
+        stated = _num(rating.get("upside_pct"))
+        check["upside_recalc_pct"] = round(calc, 1)
+        if stated is None:
+            rating["upside_pct"] = _fmt_pct(calc)
+        elif abs(stated - calc) > 1.0:  # 1%p 초과 오차 → 재계산값 사용
+            warnings.append(f"표지 상승여력 불일치: 메타 {rating.get('upside_pct')} vs "
+                            f"재계산 {_fmt_pct(calc)} (목표가/현재가 기준) → 재계산값 사용")
+            check["upside_stated_pct"] = stated
+            rating["upside_pct"] = _fmt_pct(calc)
+        meta["rating"] = rating
+
+    # ② 확률가중 적정가 = Σ(price×prob)/Σprob — prob가 %든 소수든 합으로 정규화
+    pairs = [(_num(s.get("price")), _num(s.get("prob"))) for s in (meta.get("scenarios") or [])]
+    pairs = [(p, w) for p, w in pairs if p is not None and w is not None and w > 0]
+    if pairs and sum(p for p, _ in pairs) > 0:  # 가격 전부 0이면 검산 불가(0나눗셈 방지) → 생략
+        calc_price = sum(p * w for p, w in pairs) / sum(w for _, w in pairs)
+        weighted = dict(meta.get("weighted") or {})
+        stated_p = _num(weighted.get("price"))
+        check["weighted_recalc"] = round(calc_price, 2)
+        if stated_p is None or abs(stated_p - calc_price) / calc_price > 0.01:
+            if stated_p is not None:
+                warnings.append(f"확률가중 적정가 불일치: 메타 {weighted.get('price')} vs "
+                                f"재계산 {ccy}{calc_price:,.0f} (scenarios 기준) → 재계산값 사용")
+                check["weighted_stated"] = stated_p
+            weighted["price"] = f"{ccy}{calc_price:,.0f}"
+            if cur:
+                weighted["ret"] = _fmt_pct((calc_price / cur - 1.0) * 100.0)
+            meta["weighted"] = weighted
+    return meta, warnings, check
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # 렌더링
 # ──────────────────────────────────────────────────────────────────────────
-def _render_html(ticker: str, meta: dict, body_md: str, mode: str) -> str:
+def _render_html(ticker: str, meta: dict, body_md: str, mode: str, ccy: str = "$") -> str:
     from jinja2 import Environment
 
     rating = meta.get("rating") or {}
     scenarios = meta.get("scenarios") or []
     body_html = _wrap_exhibits(_strip_title_h1(_md_to_html(body_md)))
-    rr_svg = _risk_reward_svg(scenarios, rating.get("current_price"))
+    rr_svg = _risk_reward_svg(scenarios, rating.get("current_price"), ccy)
+    # 손익 색상은 문자열 '-' 포함 여부가 아닌 파싱된 부호 기준 (U+2212 마이너스 포함)
+    upside_val = _num(rating.get("upside_pct"))
+    upside_neg = upside_val is not None and upside_val < 0
 
     env = Environment(autoescape=False)
     tmpl = env.from_string(_TEMPLATE)
@@ -511,6 +595,7 @@ def _render_html(ticker: str, meta: dict, body_md: str, mode: str) -> str:
         date=meta.get("date") or datetime.now().strftime("%Y-%m-%d"),
         headline=meta.get("headline") or "",
         rating=rating,
+        upside_neg=upside_neg,
         key_data=meta.get("key_data") or [],
         price_return=meta.get("price_return") or [],
         takeaways=meta.get("takeaways") or [],
@@ -570,7 +655,11 @@ def build(ticker: str, meta: dict = None, mode: str = "deep", date: str = None) 
     with open(src_path, encoding="utf-8") as f:
         body_md = f.read()
 
-    html = _render_html(ticker, meta, body_md, mode)
+    # 표지 숫자 검산 — 상승여력·확률가중 적정가를 재계산해 오차 시 교체 + 경고
+    ccy = _ccy_symbol(ticker, meta)
+    meta, cover_warnings, cover_check = _verify_cover_numbers(meta, ccy)
+
+    html = _render_html(ticker, meta, body_md, mode, ccy)
     out_base = "report" if mode == "deep" else "summary"
     html_path = os.path.join(dirpath, f"{out_base}.html")
     pdf_path = os.path.join(dirpath, f"{out_base}.pdf")
@@ -579,7 +668,7 @@ def build(ticker: str, meta: dict = None, mode: str = "deep", date: str = None) 
     _html_to_pdf(html_path, pdf_path)
 
     size = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
-    return {
+    result = {
         "status": "success",
         "ticker": ticker,
         "mode": mode,
@@ -588,7 +677,13 @@ def build(ticker: str, meta: dict = None, mode: str = "deep", date: str = None) 
         "pdf_path": pdf_path,
         "pdf_bytes": size,
         "dir": dirpath,
+        "currency_symbol": ccy,
     }
+    if cover_check:
+        result["cover_check"] = cover_check  # 표지 숫자 검산 상세 (재계산값)
+    if cover_warnings:
+        result["soft_warnings"] = cover_warnings
+    return result
 
 
 def build_from_args(ticker: str, args: list) -> dict:

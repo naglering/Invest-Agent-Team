@@ -80,6 +80,13 @@ MEMO_TEMPLATE = """# 투자 메모: {ticker} ({company_name})
 ### 신규 투자자
 - **권고**: {decision_new}
 
+### 진입가 2-Case (신규 진입 필수 — 눌림목만 앵커링 금지)
+<!-- Case A(현재가 즉시 진입)가 추세 유효 시 디폴트. Case B는 평단 개선과 미진입(놓침) 리스크를 병기 -->
+- **Case A — 현재가 즉시 진입**: {entry_case_a}
+  <!-- 예: "현재가 $396 즉시 진입 비중 3% (추세추종 디폴트)" -->
+- **Case B — 눌림목 대기 진입**: {entry_case_b}
+  <!-- 예: "20일선 $370 눌림목 대기 진입 비중 2% — 미체결 리스크 병기" -->
+
 - **목표가**: {target_price}
 
 ### 손절 체계 (손실은 짧게, 이익은 길게)
@@ -114,13 +121,126 @@ MEMO_TEMPLATE = """# 투자 메모: {ticker} ({company_name})
 
 {follow_up}
 
+## 트리거 정본 (watch 파싱용)
+
+<!-- 기계 판독 블록 — 카탈리스트 캘린더·손절·목표가를 구조화해 산문과 병기. cli.py watch가 파싱한다 -->
+<!-- 항목 규격: {{type: earnings|price_stop|price_target|event, date: "YYYY-MM-DD" 또는 level: 가격, note: "..."}} -->
+{triggers_block}
+
 ---
 
 *이 메모는 투자 참고 자료이며, 투자 권유가 아닙니다.*
 """
 
 
-def _render_summary(ticker: str, data: dict, date: str) -> str:
+# CLAUDE.md 메모 규격의 필수 필드 — 누락돼도 저장은 진행(N/A)하되 missing_fields로 경고
+REQUIRED_FIELDS = [
+    "thesis", "financial_summary", "valuation_summary", "technical_summary",
+    "risk_factors", "conviction", "target_price", "stop_loss", "trailing_stop_rule",
+    "entry_case_a", "entry_case_b", "position_sizing", "scenario_analysis",
+]
+
+# 트리거 정본 타입 (watch 파싱 규격)
+_TRIGGER_TYPES = ("earnings", "price_stop", "price_target", "event")
+
+# 단독 가격 문자열('$42.5', '42,000원', '₩85,000', 42.5)만 매칭 — 'MA20'류 규칙 문자열은 제외
+_PRICE_RE = re.compile(r"^\s*[\$₩]?\s*(\d[\d,]*\.?\d*)\s*(?:원|달러|USD|KRW)?\s*$")
+
+
+def _parse_price(s):
+    """단독 가격 표기만 숫자로 파싱. 트레일링 규칙 문자열(예: 'MA20 이탈')은 None."""
+    if isinstance(s, (int, float)) and not isinstance(s, bool):
+        return float(s)
+    if s is None:
+        return None
+    m = _PRICE_RE.match(str(s))
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def _yaml_quote(s) -> str:
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _normalize_triggers(data: dict):
+    """stdin JSON의 triggers를 정본 규격으로 정규화. 미지정 시 손절가·목표가에서 자동 파생.
+
+    Returns:
+        (triggers 리스트, 경고 리스트, 자동파생 여부)
+    """
+    warnings = []
+    raw = data.get("triggers")
+    out = []
+    if isinstance(raw, list):
+        for i, t in enumerate(raw):
+            if not isinstance(t, dict):
+                warnings.append(f"triggers[{i}]가 객체가 아님 — 무시")
+                continue
+            ttype = str(t.get("type", "event")).strip().lower()
+            if ttype not in _TRIGGER_TYPES:
+                warnings.append(f"triggers[{i}] type '{ttype}' 미지원 → 'event'로 저장")
+                ttype = "event"
+            item = {"type": ttype}
+            if t.get("date") not in (None, ""):
+                item["date"] = str(t["date"]).strip()
+            if t.get("level") is not None:
+                try:
+                    item["level"] = float(t["level"])
+                except (TypeError, ValueError):
+                    lv = _parse_price(t["level"])
+                    if lv is not None:
+                        item["level"] = lv
+                    else:
+                        warnings.append(f"triggers[{i}] level 숫자 아님({t['level']!r}) — level 생략")
+            if "date" not in item and "level" not in item:
+                warnings.append(f"triggers[{i}] date/level 모두 없음 — watch가 판정할 기준 부재")
+            if t.get("note") not in (None, ""):
+                item["note"] = str(t["note"])
+            out.append(item)
+    elif raw not in (None, ""):
+        warnings.append("triggers는 리스트여야 함 — 무시하고 손절가·목표가에서 자동 파생")
+
+    derived = False
+    if not out:
+        # 손절가/목표가가 단독 가격 표기면 가격 트리거로 자동 파생 ('MA20'류는 파생 안 함)
+        for key, ttype, note in (("stop_loss", "price_stop", "초기 손절 (자동 파생)"),
+                                 ("target_price", "price_target", "목표가 (자동 파생)")):
+            lv = _parse_price(data.get(key))
+            if lv is not None:
+                out.append({"type": ttype, "level": lv, "note": note})
+                derived = True
+    return out, warnings, derived
+
+
+def _render_triggers_block(triggers: list) -> str:
+    """트리거 리스트를 watch가 파싱할 정본 YAML 코드블록으로 렌더."""
+    if not triggers:
+        return "```yaml\ntriggers: []\n```"
+    lines = ["```yaml", "triggers:"]
+    for t in triggers:
+        parts = [f"type: {t['type']}"]
+        if "date" in t:
+            parts.append(f"date: {_yaml_quote(t['date'])}")
+        if "level" in t:
+            lv = float(t["level"])
+            parts.append(f"level: {int(lv) if lv.is_integer() else lv}")
+        if "note" in t:
+            parts.append(f"note: {_yaml_quote(t['note'])}")
+        lines.append("  - {" + ", ".join(parts) + "}")
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def _missing_fields(data: dict) -> list:
+    """CLAUDE.md 메모 규격 필수 필드 중 누락(빈 값/N/A) 목록."""
+    missing = [k for k in REQUIRED_FIELDS if data.get(k) in (None, "", "N/A")]
+    # 투자 결정은 decision_holder/decision_new(구 decision 폴백) 중 하나라도 있어야 함
+    if all(data.get(k) in (None, "", "N/A")
+           for k in ("decision_holder", "decision_new", "decision")):
+        missing.append("decision_holder/decision_new")
+    return missing
+
+
+def _render_summary(ticker: str, data: dict, date: str, triggers_block: str = "```yaml\ntriggers: []\n```") -> str:
     decision_holder = data.get("decision_holder", data.get("decision", "N/A"))
     decision_new = data.get("decision_new", data.get("decision", "N/A"))
     return MEMO_TEMPLATE.format(
@@ -137,6 +257,8 @@ def _render_summary(ticker: str, data: dict, date: str) -> str:
         narrative_momentum=data.get("narrative_momentum", "N/A"),
         decision_holder=decision_holder,
         decision_new=decision_new,
+        entry_case_a=data.get("entry_case_a", "N/A"),
+        entry_case_b=data.get("entry_case_b", "N/A"),
         target_price=data.get("target_price", "N/A"),
         stop_loss=data.get("stop_loss", "N/A"),
         trailing_stop_rule=data.get("trailing_stop_rule", "N/A"),
@@ -146,6 +268,7 @@ def _render_summary(ticker: str, data: dict, date: str) -> str:
         position_sizing=data.get("position_sizing", "N/A"),
         scenario_analysis=data.get("scenario_analysis", "N/A"),
         follow_up=data.get("follow_up", "N/A"),
+        triggers_block=triggers_block,
     )
 
 
@@ -159,11 +282,17 @@ def write_memo(ticker: str, data: dict, overwrite: bool = True) -> dict:
     Args:
         ticker: 종목 티커
         data: 메모 데이터(dict). 표준 요약 필드 + 선택 키:
+            - entry_case_a / entry_case_b: 진입가 2-Case (CLAUDE.md 규격 7·8항 필수)
+            - triggers: watch 파싱용 트리거 리스트
+              [{"type": "earnings|price_stop|price_target|event",
+                 "date": "YYYY-MM-DD" 또는 "level": 가격, "note": "..."}, ...]
+              미지정 시 stop_loss/target_price(단독 가격 표기일 때만)에서 자동 파생.
             - version: 지정 시 디렉토리명 suffix로 별도 보관
             - full_report: 종합보고서 마크다운(있으면 report.md로 저장)
         overwrite: False면 같은 날 디렉토리가 이미 있을 때 시각(HHMM) suffix로 분리.
     Returns:
-        dict: 저장 경로 및 메타데이터
+        dict: 저장 경로 및 메타데이터. 필수 필드 누락 시 missing_fields + soft_warnings
+              (경고만 — 저장은 진행됨).
     """
     _ensure_dir()
     date = datetime.now().strftime("%Y-%m-%d")
@@ -180,9 +309,13 @@ def write_memo(ticker: str, data: dict, overwrite: bool = True) -> dict:
     dirpath = os.path.join(MEMOS_DIR, dirname)
     os.makedirs(dirpath, exist_ok=True)
 
+    # 트리거 정본(watch 파싱용) 구성 + 필수 필드 검증 (누락은 경고만 — 저장은 진행)
+    triggers, trigger_warnings, triggers_derived = _normalize_triggers(data)
+    missing = _missing_fields(data)
+
     summary_path = os.path.join(dirpath, SUMMARY_NAME)
     with open(summary_path, "w", encoding="utf-8") as f:
-        f.write(_render_summary(ticker, data, date))
+        f.write(_render_summary(ticker, data, date, _render_triggers_block(triggers)))
 
     report_path = None
     full_report = data.get("full_report")
@@ -191,16 +324,29 @@ def write_memo(ticker: str, data: dict, overwrite: bool = True) -> dict:
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(full_report)
 
-    return {
+    soft_warnings = []
+    if missing:
+        soft_warnings.append("필수 필드 누락(N/A로 저장은 진행됨): " + ", ".join(missing)
+                             + " — CLAUDE.md 메모 규격 확인")
+    soft_warnings.extend(trigger_warnings)
+
+    result = {
         "status": "success",
         "dir": dirpath,
         "summary_path": summary_path,
         "report_path": report_path,
         "ticker": ticker.upper(),
         "date": date,
+        "missing_fields": missing,
+        "triggers_count": len(triggers),
         "hint": ("종합보고서는 Committee Chair가 `cli.py memo report <TICKER>`로 "
                  "report.md에 저장합니다." if report_path is None else None),
     }
+    if triggers_derived:
+        result["triggers_derived"] = True  # triggers 미지정 → 손절가/목표가에서 자동 파생
+    if soft_warnings:
+        result["soft_warnings"] = soft_warnings
+    return result
 
 
 def write_report(ticker: str, content: str, date: str = None) -> dict:

@@ -21,24 +21,38 @@ MANDATE_PATH = os.path.join(MANDATE_DIR, "default.json")  # 하위호환
 MARKET_TICKER = "SPY"  # S&P 500 ETF (베타 계산용)
 RISK_FREE_RATE = 0.045  # 무위험 수익률 (미국 10년물 근사)
 
+# 매크로 레짐 → 포지션 사이징 승수 (risk-off 전환기의 고베타 집중 드로다운 방어)
+REGIME_MULTIPLIERS = {"risk_on": 1.0, "neutral": 0.75, "risk_off": 0.5}
 
-def _load_mandate(profile: str = None) -> dict:
-    """mandate 파일을 로드한다.
+# 진입 모드 허용 집합 (오타 시 무경고 0.5x 폴백 방지)
+ENTRY_MODES = ("breakout", "accumulate", "full")
+
+
+def _load_mandate(profile: str = None, explicit: bool = False) -> tuple:
+    """mandate 파일을 로드한다. (mandate, fallback) 튜플을 반환한다.
 
     profile=None이면 default. profile='megatrend' 등이면 해당 프로파일 파일을 읽는다.
+    explicit=True(사용자가 --mandate로 명시 지정)인데 파일이 없으면 ValueError —
+    오타(예: 'megatrande')가 조용히 default로 폴백되는 것을 막는다.
+    자동선택 프로파일 파일이 없으면 default로 폴백하고 fallback 정보를 함께 반환한다.
     """
     name = (profile or "default").strip()
     path = os.path.join(MANDATE_DIR, f"{name}.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f), None
     except FileNotFoundError:
-        # 폴백: default
+        if explicit:
+            raise ValueError(
+                f"mandate 프로파일 '{name}'이(가) 없습니다 (data/mandates/{name}.json). "
+                f"사용 가능: default | megatrend | crypto"
+            )
+        # 폴백: default (silent 방지 — 폴백 사실을 호출부에 알림)
         try:
             with open(MANDATE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return json.load(f), {"requested": name, "actual": "default"}
         except FileNotFoundError:
-            return {}
+            return {}, {"requested": name, "actual": None}
 
 
 def calc_scenario_kelly(scenarios: list) -> dict:
@@ -97,6 +111,7 @@ def analyze_risk(
     entry_mode: str = "accumulate",
     scenarios: list = None,
     stop_loss_pct: float = None,
+    regime: str = None,
 ) -> dict:
     """
     주어진 티커의 리스크 지표와 (확신도 가중) 포지션 사이징을 계산한다.
@@ -104,15 +119,39 @@ def analyze_risk(
     Args:
         ticker_symbol: 주식 티커 심볼
         period: 데이터 조회 기간 (기본 1년)
-        mandate_profile: 'default'(보수) | 'megatrend'(공격). None이면 default.
+        mandate_profile: 'default'(보수) | 'megatrend'(공격) | 'crypto'. None이면 자동선택.
         conviction: 확신도 배수 0.5~2.0 (서사·모멘텀·자금흐름·카탈리스트 종합). None이면 1.0(중립).
         entry_mode: 'breakout'(돌파 추격, 1회 크게) | 'accumulate'(분할) | 'full'.
-        scenarios: 시나리오 기반 Kelly 입력 [{"prob","return_pct"}]. 있으면 노이즈 Kelly 대체.
+        scenarios: 시나리오 기반 Kelly 입력 [{"prob","return_pct"}] (JSON 문자열도 허용). 있으면 노이즈 Kelly 대체.
         stop_loss_pct: 손절 폭(%). 있으면 risk-per-trade(자본 1~2% 룰) 사이징 병기.
+        regime: 매크로 레짐 'risk_on'|'neutral'|'risk_off' — recommended에 승수 1.0/0.75/0.5 적용. None이면 1.0.
 
     Returns:
         dict: 변동성, VaR, 최대낙폭, 베타, 샤프비율, 확신도 가중 포지션 사이징 포함
     """
+    # --- 입력 검증 (오타가 조용히 기본값으로 폴백되는 것을 방지) ---
+    entry_mode = (entry_mode or "accumulate").strip().lower()
+    if entry_mode not in ENTRY_MODES:
+        raise ValueError(f"entry_mode는 {'|'.join(ENTRY_MODES)} 중 하나여야 합니다: '{entry_mode}'")
+
+    regime_label = "unspecified"
+    regime_multiplier = 1.0
+    if regime is not None:
+        regime_norm = str(regime).strip().lower()
+        if regime_norm not in REGIME_MULTIPLIERS:
+            raise ValueError(f"regime은 risk_on|neutral|risk_off 중 하나여야 합니다: '{regime}'")
+        regime_label = regime_norm
+        regime_multiplier = REGIME_MULTIPLIERS[regime_norm]
+
+    # 시나리오는 JSON 문자열로도 받는다 (CLI --scenarios 경로)
+    if isinstance(scenarios, str):
+        try:
+            scenarios = json.loads(scenarios)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"scenarios JSON 파싱 실패: {e}")
+    if scenarios is not None and not isinstance(scenarios, list):
+        raise ValueError('scenarios는 [{"prob":0.3,"return_pct":120}, ...] 형태의 리스트여야 합니다.')
+
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period=period)
 
@@ -122,9 +161,26 @@ def analyze_risk(
     close = df["Close"]
     daily_returns = close.pct_change().dropna()
 
+    # --- 티커 메타 (info는 1회만 조회해 재사용) — is_crypto 판정을 연율화 계산 앞에 수행 ---
+    ticker_info = {}
+    sector = ""
+    quote_type = ""
+    try:
+        ticker_info = ticker.info or {}
+        sector = ticker_info.get("sector", "")
+        quote_type = (ticker_info.get("quoteType") or "").upper()
+    except Exception:
+        pass
+
+    company_name = ticker_info.get("longName") or ticker_info.get("shortName") or ""
+    is_crypto = quote_type == "CRYPTOCURRENCY"
+
+    # 연율화 기준: 크립토는 24/7 거래로 연 365봉, 주식은 252봉 — 변동성·평균수익·소르티노 분모 통일
+    periods = 365 if is_crypto else 252
+
     # --- 변동성 ---
     daily_volatility = float(daily_returns.std())
-    annual_volatility = daily_volatility * np.sqrt(252)
+    annual_volatility = daily_volatility * np.sqrt(periods)
 
     # --- VaR (Value at Risk) ---
     var_95 = float(np.percentile(daily_returns, 5))
@@ -149,14 +205,14 @@ def analyze_risk(
                 stock_r = daily_returns.loc[common_idx].values
                 market_r = market_returns.loc[common_idx].values
                 covariance = np.cov(stock_r, market_r)[0][1]
-                market_variance = np.var(market_r)
+                market_variance = np.var(market_r, ddof=1)  # 표본 cov와 ddof 통일
                 if market_variance > 0:
                     beta = round(float(covariance / market_variance), 3)
     except Exception:
         pass
 
     # --- 샤프 비율 ---
-    mean_annual_return = float(daily_returns.mean()) * 252
+    mean_annual_return = float(daily_returns.mean()) * periods
     sharpe_ratio = None
     if annual_volatility > 0:
         sharpe_ratio = round((mean_annual_return - RISK_FREE_RATE) / annual_volatility, 3)
@@ -167,9 +223,9 @@ def analyze_risk(
     current_price = float(close.iloc[-1])
     position_52w = round((current_price - low_52w) / (high_52w - low_52w) * 100, 1) if high_52w != low_52w else 50.0
 
-    # --- 소르티노 비율 ---
-    downside_returns = daily_returns[daily_returns < 0]
-    downside_std = float(downside_returns.std()) * np.sqrt(252) if len(downside_returns) > 0 else None
+    # --- 소르티노 비율 (하방편차 = LPM2: 전체 n 분모, 목표수익 0 기준) ---
+    downside = np.minimum(daily_returns.values, 0)
+    downside_std = float(np.sqrt(np.mean(downside ** 2)) * np.sqrt(periods)) if len(downside) > 0 else None
     sortino_ratio = None
     if downside_std and downside_std > 0:
         sortino_ratio = round((mean_annual_return - RISK_FREE_RATE) / downside_std, 3)
@@ -184,24 +240,13 @@ def analyze_risk(
     correlations = {}
     benchmark_tickers = {"SPY": "S&P 500", "QQQ": "NASDAQ 100"}
 
-    # 섹터 ETF 추가 (info는 1회만 조회해 재사용)
-    ticker_info = {}
-    sector = ""
-    quote_type = ""
-    try:
-        ticker_info = ticker.info or {}
-        sector = ticker_info.get("sector", "")
-        quote_type = (ticker_info.get("quoteType") or "").upper()
-        sector_etf = SECTOR_ETF_MAP.get(sector)
-        if sector_etf:
-            benchmark_tickers[sector_etf] = f"섹터 ETF ({sector})"
-    except Exception:
-        pass
-
-    company_name = ticker_info.get("longName") or ticker_info.get("shortName") or ""
-    is_crypto = quote_type == "CRYPTOCURRENCY"
+    # 섹터 ETF 추가 (ticker_info는 위에서 1회 조회한 것을 재사용)
+    sector_etf = SECTOR_ETF_MAP.get(sector)
+    if sector_etf:
+        benchmark_tickers[sector_etf] = f"섹터 ETF ({sector})"
 
     # mandate 프로파일 결정: 명시값 우선 → 크립토면 crypto → 그 외 티커→테마 자동 매핑
+    explicit_mandate = mandate_profile is not None  # 명시 지정 여부 (오타 ValueError 판단용)
     if mandate_profile is None:
         mandate_profile = ("crypto" if is_crypto
                            else mandate_profile_for_ticker(ticker_symbol, sector, company_name))
@@ -231,9 +276,12 @@ def analyze_risk(
             pass
 
     # --- 포지션 사이징 (확신도 가중 + 손절 규율) ---
-    mandate = _load_mandate(mandate_profile)
+    mandate, mandate_fallback = _load_mandate(mandate_profile, explicit=explicit_mandate)
+    if mandate_fallback:
+        mandate_profile = mandate_fallback["actual"] or mandate_profile  # 출력 라벨은 실제 적용 프로파일
     max_position_pct = mandate.get("max_position_pct", 10)
     risk_tolerance = mandate.get("risk_tolerance", "moderate")
+    risk_budget_pct = mandate.get("risk_budget_pct", 2.0)  # 트레이드당 자본 리스크 예산(%)
 
     # 소프트 참고치 (자동으로 비중을 깎지 않음 — 초과 시 경고만)
     var_based_max = None
@@ -260,15 +308,21 @@ def analyze_risk(
     conviction_multiplier = 1.0 if conviction is None else max(0.5, min(float(conviction), 2.0))
 
     # 중립 기준(neutral_base) = mandate 최대비중의 절반. 확신도로 0.25x~1.0x(=최대)까지 스케일.
+    # 매크로 레짐 승수(risk_on 1.0 / neutral 0.75 / risk_off 0.5)를 마지막에 적용 — 전환기 드로다운 방어.
     neutral_base = max_position_pct * 0.5
-    recommended_pct = round(min(neutral_base * conviction_multiplier, max_position_pct), 1)
+    recommended_pct = round(min(neutral_base * conviction_multiplier, max_position_pct) * regime_multiplier, 1)
 
     # 진입 모드별 1회 진입 비중 (돌파=크게, 분할=절반)
-    entry_factor = {"breakout": 0.8, "full": 1.0, "accumulate": 0.5}.get(entry_mode, 0.5)
+    entry_factor = {"breakout": 0.8, "full": 1.0, "accumulate": 0.5}[entry_mode]
     entry_size_pct = round(recommended_pct * entry_factor, 1)
 
     # 소프트 경고 (자동 감점 대신 명시)
     soft_warnings = []
+    if mandate_fallback:
+        soft_warnings.append(
+            f"mandate 프로파일 '{mandate_fallback['requested']}' 파일이 없어 "
+            f"'{mandate_fallback['actual'] or '내장 기본값'}'(으)로 폴백 — 사이징 한도가 의도와 다를 수 있음. mandate_profile 확인 필요."
+        )
     if var_based_max is not None and recommended_pct > var_based_max:
         soft_warnings.append(
             f"권고 비중 {recommended_pct}%가 VaR 기준 참고상한({var_based_max}%)을 초과 — 손절 규율(타이트한 스톱) 필수."
@@ -277,7 +331,9 @@ def analyze_risk(
         soft_warnings.append("시나리오 Kelly 기대수익 음수 → 진입 보류 신호. 확신도/논거 재검토.")
 
     # risk-per-trade: 손절 폭이 주어지면 '자본의 1~2%만 잃는' 사이즈 병기
+    # + implied_capital_risk: 권고 비중 × 손절폭 = 트레이드당 실제 자본 리스크(%) — 리스크 예산 초과 시 경고
     risk_per_trade = None
+    implied_capital_risk_pct = None
     if stop_loss_pct and stop_loss_pct > 0:
         risk_per_trade = {
             "stop_loss_pct": round(stop_loss_pct, 1),
@@ -285,21 +341,32 @@ def analyze_risk(
             "size_for_2pct_capital_risk": round(2.0 / stop_loss_pct * 100, 1),
             "note": "손절 시 자본의 1~2%만 손실 보도록 한 비중(%). 권고비중과 비교해 더 보수적인 쪽 채택 가능.",
         }
+        implied_capital_risk_pct = round(recommended_pct * stop_loss_pct / 100, 2)
+        if implied_capital_risk_pct > risk_budget_pct:
+            soft_warnings.append(
+                f"권고 비중 {recommended_pct}% × 손절폭 {round(stop_loss_pct, 1)}% = 트레이드당 자본 리스크 "
+                f"{implied_capital_risk_pct}%가 리스크 예산({risk_budget_pct}%)을 초과 — 비중 축소 또는 스톱 타이트닝 택일 필요."
+            )
 
     position_sizing = {
         "mandate_profile": mandate_profile,
+        "mandate_fallback": mandate_fallback,
         "risk_tolerance": risk_tolerance,
         "conviction_multiplier": conviction_multiplier,
         "entry_mode": entry_mode,
+        "regime": regime_label,
+        "regime_multiplier": regime_multiplier,
         "mandate_max_pct": max_position_pct,
         "recommended_pct": recommended_pct,
         "entry_size_pct": entry_size_pct,
+        "implied_capital_risk_pct": implied_capital_risk_pct,
+        "risk_budget_pct": risk_budget_pct,
         "pyramiding": "추세 유효(정배열+ADX>25) & 신고가 돌파 + 거래량 동반 시, 손절선 상향하며 권고비중까지 추가 진입(불타기). 물타기 아님.",
         "var_based_max_pct": var_based_max,
         "kelly": kelly,
         "risk_per_trade": risk_per_trade,
         "soft_warnings": soft_warnings,
-        "method": "neutral_base(=mandate_max×0.5) × conviction(0.5~2.0), mandate_max 천장. VaR/Kelly는 경고용 참고치(자동 감점 안 함).",
+        "method": "neutral_base(=mandate_max×0.5) × conviction(0.5~2.0), mandate_max 천장 → × regime 승수(risk_on 1.0/neutral 0.75/risk_off 0.5). VaR/Kelly는 경고용 참고치(자동 감점 안 함).",
     }
 
     # --- 스트레스 테스트 (선형 베타 외삽 + 가격 0 하한 클램프) ---
@@ -323,6 +390,7 @@ def analyze_risk(
     return {
         "ticker": ticker_symbol,
         "period": period,
+        "annualization_basis": periods,  # 연율화 분모: 크립토 365(24/7봉), 주식 252 — 변동성·샤프·소르티노 공통
         "current_price": round(current_price, 2),
         "volatility": {
             "daily_pct": round(daily_volatility * 100, 3),
@@ -423,31 +491,48 @@ def check_mandate(ticker_symbol: str, mandate_profile: str = None) -> dict:
     is_fund = quote_type in ("ETF", "MUTUALFUND")
     is_crypto = quote_type == "CRYPTOCURRENCY"
 
+    explicit_mandate = mandate_profile is not None  # 명시 지정 여부 (오타 ValueError 판단용)
     if mandate_profile is None:
         mandate_profile = ("crypto" if is_crypto
                            else mandate_profile_for_ticker(ticker_symbol, sector, company_name))
 
-    mandate = _load_mandate(mandate_profile)
+    mandate, mandate_fallback = _load_mandate(mandate_profile, explicit=explicit_mandate)
     if not mandate:
         return {"error": "mandate 파일을 찾을 수 없습니다.", "profile": mandate_profile}
+    if mandate_fallback:
+        mandate_profile = mandate_fallback["actual"] or mandate_profile  # 출력 라벨은 실제 적용 프로파일
 
     checks = []
     all_pass = True
     notes = []
+    if mandate_fallback:
+        notes.append(
+            f"mandate 프로파일 '{mandate_fallback['requested']}' 파일이 없어 "
+            f"'{mandate_fallback['actual']}'(으)로 폴백 — 게이트 기준이 의도와 다를 수 있음. mandate_profile 확인 필요."
+        )
 
-    # 시가총액 확인
+    # 시가총액 확인 (min_cap>0인데 시총 결측이면 '스크린 미수행'으로 명시 — 무언 스킵 방지)
     market_cap = info.get("marketCap")
     min_cap = mandate.get("min_market_cap_usd", 0)
-    if market_cap and min_cap:
-        passed = market_cap >= min_cap
-        checks.append({
-            "rule": "최소 시가총액",
-            "threshold": f"${min_cap:,.0f}",
-            "actual": f"${market_cap:,.0f}" if market_cap else "N/A",
-            "passed": passed,
-        })
-        if not passed:
-            all_pass = False
+    if min_cap:
+        if market_cap:
+            passed = market_cap >= min_cap
+            checks.append({
+                "rule": "최소 시가총액",
+                "threshold": f"${min_cap:,.0f}",
+                "actual": f"${market_cap:,.0f}",
+                "passed": passed,
+            })
+            if not passed:
+                all_pass = False
+        else:
+            checks.append({
+                "rule": "최소 시가총액",
+                "threshold": f"${min_cap:,.0f}",
+                "actual": "N/A",
+                "passed": None,
+            })
+            notes.append("시가총액 데이터 없음 — 최소 시총 스크린 미수행(저유동·러그 방어선 미확인). 시총을 별도 출처로 확인할 것.")
 
     # PER / 성장조정 밸류에이션 확인
     pe_ratio = info.get("trailingPE")
@@ -521,12 +606,12 @@ def check_mandate(ticker_symbol: str, mandate_profile: str = None) -> dict:
         if not passed:
             all_pass = False
 
-    # 부채비율 확인 (yfinance debtToEquity 단위 혼선 방어: %표기 vs 배수표기)
+    # 부채비율 확인 — yfinance debtToEquity는 항상 %표기(예: 6.6=0.066배, 150=1.5배)이므로 무조건 /100.
+    # (과거 '<10이면 배수' 재해석 분기가 무부채 성장주를 100배 뻥튀기해 게이트 탈락시킴 — NVDA 실증)
     debt_to_equity = info.get("debtToEquity")
     max_de = mandate.get("max_debt_to_equity")
     if max_de and debt_to_equity is not None:
-        # 값이 10 이상이면 % 표기(예: 150 = 1.5배), 미만이면 이미 배수(예: 1.5)로 간주
-        de_multiple = debt_to_equity / 100 if debt_to_equity >= 10 else debt_to_equity
+        de_multiple = debt_to_equity / 100
         passed = de_multiple <= max_de
         checks.append({
             "rule": "최대 부채비율",
@@ -567,6 +652,7 @@ def check_mandate(ticker_symbol: str, mandate_profile: str = None) -> dict:
     return {
         "ticker": ticker_symbol,
         "mandate_profile": mandate_profile,
+        "mandate_fallback": mandate_fallback,
         "mandate_name": mandate.get("name", "Unknown"),
         "risk_tolerance": mandate.get("risk_tolerance", "N/A"),
         "overall_compliant": all_pass,

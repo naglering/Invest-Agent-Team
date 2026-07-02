@@ -29,7 +29,7 @@ INDUSTRY_PEERS = {
     "Oil & Gas Integrated": ["XOM", "CVX", "SHEL", "TTE", "BP", "COP"],
     "Restaurants": ["MCD", "SBUX", "CMG", "YUM", "DRI", "QSR"],
     "Entertainment": ["DIS", "NFLX", "CMCSA", "WBD", "PARA"],
-    "Communication Equipment": ["CSCO", "ANET", "MSI", "JNPR", "ERIC"],
+    "Communication Equipment": ["CSCO", "ANET", "MSI", "ERIC"],  # JNPR은 HPE 인수 상폐로 제거
     "Telecom Services": ["T", "VZ", "TMUS", "AMX"],
     "Utilities - Regulated Electric": ["NEE", "DUK", "SO", "D", "AEP"],
     "REIT - Diversified": ["PLD", "AMT", "EQIX", "SPG", "O"],
@@ -96,18 +96,18 @@ def _get_theme_peer_tickers(ticker: str) -> tuple:
 
 
 def _extract_metrics(info: dict) -> dict:
+    # yfinance info의 operatingMargins/returnOnEquity는 항상 소수 형태(0.15=15%) → 조건 없는 ×100
+    # (abs<10 휴리스틱은 초고ROE·초고성장 케이스를 100배 축소해 제거)
+    om_raw = info.get("operatingMargins")
+    roe_raw = info.get("returnOnEquity")
     return {
         "pe_ratio": _safe_round(info.get("trailingPE")),
         "forward_pe": _safe_round(info.get("forwardPE")),
         "pb_ratio": _safe_round(info.get("priceToBook")),
         "ps_ratio": _safe_round(info.get("priceToSalesTrailing12Months")),
         "ev_to_ebitda": _safe_round(info.get("enterpriseToEbitda")),
-        "operating_margin_pct": _safe_round(
-            info.get("operatingMargins", 0) * 100 if info.get("operatingMargins") and abs(info.get("operatingMargins", 0)) < 10 else info.get("operatingMargins")
-        ),
-        "roe_pct": _safe_round(
-            info.get("returnOnEquity", 0) * 100 if info.get("returnOnEquity") and abs(info.get("returnOnEquity", 0)) < 10 else info.get("returnOnEquity")
-        ),
+        "operating_margin_pct": _safe_round(om_raw * 100) if om_raw is not None else None,
+        "roe_pct": _safe_round(roe_raw * 100) if roe_raw is not None else None,
         "market_cap": info.get("marketCap"),
     }
 
@@ -154,19 +154,23 @@ def compare_peers(ticker_symbol: str, max_peers: int = 5, custom_peers: list = N
             "sector": sector,
             "target_metrics": target_metrics,
             "peers": [],
+            "failed_peers": [],
             "sector_averages": {},
+            "excluded_negative": {},
             "ranking": {},
             "note": f"업종 '{industry}'에 대한 피어 매핑이 없으며, 메가트렌드 테마에도 해당되지 않습니다.",
         }
 
-    # 피어 데이터 수집
+    # 피어 데이터 수집 — 조회 실패(상폐·오티커)는 failed_peers로 노출해 조용한 표본 축소 방지
     peers_data = []
-    all_metrics = [target_metrics]  # 타겟 포함
+    failed_peers = []
+    all_metrics = [target_metrics]  # 타겟 포함 (유효 지표 카운트용 — 벤치마크 통계는 peers-only)
 
     for pt in peer_tickers:
         try:
             peer_info = yf.Ticker(pt).info or {}
             if not peer_info or peer_info.get("currentPrice") is None and peer_info.get("regularMarketPrice") is None:
+                failed_peers.append(pt)
                 continue
             metrics = _extract_metrics(peer_info)
             peers_data.append({
@@ -176,23 +180,37 @@ def compare_peers(ticker_symbol: str, max_peers: int = 5, custom_peers: list = N
             })
             all_metrics.append(metrics)
         except Exception:
+            failed_peers.append(pt)
             continue
 
-    # 섹터 평균/중앙값 계산
+    # 섹터 평균/중앙값 계산 — 벤치마크는 peers-only(타겟 포함 시 자기참조로 프리미엄이 0 방향 희석),
+    # lower-is-better 멀티플은 값>0만 포함(음수 멀티플의 '가장 싸다=1위'·평균 파괴 방지)
     metric_keys = ["pe_ratio", "forward_pe", "pb_ratio", "ps_ratio", "ev_to_ebitda", "operating_margin_pct", "roe_pct"]
+    lower_is_better_keys = {"pe_ratio", "forward_pe", "pb_ratio", "ps_ratio", "ev_to_ebitda"}
     sector_averages = {}
+    excluded_negative = {}
+    peer_values_by_key = {}
     for key in metric_keys:
-        values = [m[key] for m in all_metrics if m[key] is not None]
-        if values:
+        vals = []
+        for p in peers_data:
+            v = p["metrics"].get(key)
+            if v is None:
+                continue
+            if key in lower_is_better_keys and v <= 0:
+                excluded_negative.setdefault(key, []).append(p["ticker"])
+                continue
+            vals.append(v)
+        peer_values_by_key[key] = vals
+        if vals:
             import numpy as np
             sector_averages[key] = {
-                "mean": _safe_round(float(np.mean(values))),
-                "median": _safe_round(float(np.median(values))),
-                "min": _safe_round(min(values)),
-                "max": _safe_round(max(values)),
+                "mean": _safe_round(float(np.mean(vals))),
+                "median": _safe_round(float(np.median(vals))),
+                "min": _safe_round(min(vals)),
+                "max": _safe_round(max(vals)),
             }
 
-    # 타겟 순위 및 프리미엄/할인 계산
+    # 타겟 순위 및 프리미엄/할인 계산 (랭킹 풀엔 타겟 포함, 벤치마크 분모는 peers-only 중앙값)
     ranking = {}
     for key in metric_keys:
         target_val = target_metrics.get(key)
@@ -201,7 +219,17 @@ def compare_peers(ticker_symbol: str, max_peers: int = 5, custom_peers: list = N
             continue
 
         higher_is_better = key in ["operating_margin_pct", "roe_pct"]
-        raw_values = [m[key] for m in all_metrics if m[key] is not None]
+        if not higher_is_better and target_val <= 0:
+            # 타겟 자신의 음수 멀티플(적자·음수자본 등)도 랭킹·프리미엄에서 제외
+            excluded_negative.setdefault(key, []).append(ticker_symbol.upper())
+            ranking[key] = {
+                "rank": "N/A",
+                "premium_pct": None,
+                "interpretation": "음수 멀티플 (적자/음수자본 등) — '가장 싸다' 오독 방지 위해 랭킹·통계 제외",
+            }
+            continue
+
+        raw_values = peer_values_by_key[key] + [target_val]
         values = sorted(raw_values, reverse=higher_is_better)  # 1위가 앞쪽
 
         # bisect로 순위 계산 — float == 멤버십 대신 정렬 위치로 산출(동률·부동소수 안전).
@@ -235,9 +263,17 @@ def compare_peers(ticker_symbol: str, max_peers: int = 5, custom_peers: list = N
         "sector": sector,
         "target_metrics": target_metrics,
         "peers": peers_data,
+        "failed_peers": failed_peers,
         "sector_averages": sector_averages,
+        "benchmark_basis": "peers-only (타겟 제외; lower-is-better 멀티플은 값>0만 포함)",
+        "excluded_negative": excluded_negative,
         "ranking": ranking,
     }
+    if failed_peers:
+        result["peer_fetch_warning"] = (
+            f"피어 {len(peer_tickers)}개 중 {len(failed_peers)}개 조회 실패(상폐·오티커 가능): "
+            f"{', '.join(failed_peers)} — 표본 축소로 벤치마크 신뢰도 저하"
+        )
 
     # 메가트렌드 테마 폴백을 사용한 경우 — 적자 종목이 많아 PER이 무의미할 수 있으므로
     # P/S·EV/Sales 중심 해석 note와 P/S 기준 순위를 함께 제공한다.

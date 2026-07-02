@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 
 # ── 티커 → CoinGecko id 별칭(상위 시총 ~40종). 충돌 심볼은 시총 1위 정본으로 고정. ──
 # (예: STX→Stacks, UNI→Uniswap, TON→Toncoin — 이 도구는 크립토 문맥이므로 동명 주식과 무관)
@@ -53,12 +54,37 @@ YF_OVERRIDE = {
     "SUI": "SUI20947-USD", "TAO": "TAO22974-USD", "PEPE": "PEPE24478-USD",
     "POL": "POL28321-USD", "MATIC": "POL28321-USD", "RENDER": "RENDER-USD",
     "RNDR": "RENDER-USD", "IOTA": "IOTA-USD", "FET": "FET-USD",
+    # 동명 죽은 토큰 트랩(라이브 검증): GRT-USD=Golden Ratio Token, STX-USD=Stox, IMX-USD=Impermax
+    "GRT": "GRT6719-USD", "STX": "STX4847-USD", "IMX": "IMX10603-USD",
 }
 
 
 def _yf_symbol(base: str) -> str:
     """base 심볼 → 검증된 yfinance 티커. 오버라이드 우선, 없으면 '{base}-USD'(대부분 유효)."""
     return YF_OVERRIDE.get(base.upper(), f"{base.upper()}-USD")
+
+
+def _yf_price_usd(yf_sym: str):
+    """Yahoo v8 chart(키리스)로 현재가 조회 — yfinance 심볼 교차검증용. 실패 시 None.
+
+    근본 대책(#8): 오버라이드 목록 밖의 동명 심볼 충돌(신규 코인)도 CoinGecko 가격과
+    ±20% 교차검증으로 구조적으로 차단하기 위한 조회 경로.
+    """
+    d = _get_json(f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}?range=1d&interval=1d")
+    try:
+        p = d["chart"]["result"][0]["meta"].get("regularMarketPrice")
+        return float(p) if p is not None else None
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _cg_error_code(resp):
+    """CoinGecko 에러 응답({'status':{'error_code':429,...}}) 감지 — truthy dict라 falsy 체크로는 못 잡음."""
+    if isinstance(resp, dict):
+        st = resp.get("status")
+        if isinstance(st, dict) and st.get("error_code"):
+            return st.get("error_code")
+    return None
 
 # 안정적 코인(스테이블) 심볼/카테고리 키워드 — 멀티플 평가 부적합 판정용
 _STABLE_SYMBOLS = {"USDT", "USDC", "DAI", "USDS", "TUSD", "FDUSD", "PYUSD", "USDE", "FRAX"}
@@ -229,7 +255,12 @@ def _annualize(d):
 
 
 def _defillama_chain(coin_id):
-    """coin_id가 체인이면 DefiLlama 체인명·TVL·연환산 수수료/매출을 반환(아니면 None)."""
+    """coin_id가 체인이면 DefiLlama 체인명·TVL·연환산 수수료/매출을 반환(아니면 None).
+
+    수수료는 **체인 자체(가스) 수수료**(/summary/fees/{gecko_id} — 체인이 프로토콜 엔트리로
+    등록됨, 라이브 검증)만 사용한다. /overview/fees/{체인명}은 체인 위 전체 dApp(Lido·Aave 등)
+    수수료 합산이라 토큰 홀더에 귀속되지 않음 — P/F 분모 금지, ecosystem_fees 참고 필드로만 분리.
+    """
     chains = _get_json(f"{DL}/v2/chains")
     if not isinstance(chains, list):
         return None
@@ -238,16 +269,26 @@ def _defillama_chain(coin_id):
         return None
     name = chain.get("name")
     tvl = chain.get("tvl")
+    # 체인 자체 수수료(가스) — P/F·P/S 분모
+    fees = _get_json(f"{DL}/summary/fees/{coin_id}?dataType=dailyFees")
+    if fees and all(fees.get(k) is None for k in ("total24h", "total30d", "total1y")):
+        fees = None
+    rev = _get_json(f"{DL}/summary/fees/{coin_id}?dataType=dailyRevenue") if fees else None
+    # 생태계 전체 dApp 수수료 합산 — 활동 규모 참고용(홀더 귀속 아님)
     enc = name.replace(" ", "%20") if name else name
-    fees = _get_json(f"{DL}/overview/fees/{enc}"
-                     "?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true&dataType=dailyFees")
-    rev = _get_json(f"{DL}/overview/fees/{enc}"
-                    "?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true&dataType=dailyRevenue")
+    eco = _get_json(f"{DL}/overview/fees/{enc}"
+                    "?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true&dataType=dailyFees")
     return {
         "kind": "chain", "name": name, "tvl_usd": _round(tvl, 0),
         "fees_24h_usd": _round((fees or {}).get("total24h"), 0) if fees else None,
         "fees_annualized_usd": _round(_annualize(fees), 0),
         "revenue_annualized_usd": _round(_annualize(rev), 0),
+        "fees_scope": ("chain-native(체인 자체 가스 수수료 — P/F 분모)" if fees
+                       else "체인 자체 수수료 미매칭(/summary/fees 미등록) — P/F 산출 불가"),
+        "ecosystem_fees_24h_usd": _round((eco or {}).get("total24h"), 0) if eco else None,
+        "ecosystem_fees_annualized_usd": _round(_annualize(eco), 0),
+        "ecosystem_fees_note": "체인 위 전체 dApp 수수료 합산(Lido·Aave 등 각 토큰 홀더 귀속) — "
+                               "P/F 분모 사용 금지, 생태계 활동 규모 참고용",
     }
 
 
@@ -333,17 +374,50 @@ def crypto_overview(symbol: str) -> dict:
     res = resolve_id(symbol)
     cid = res["id"]
     errors = []
+    soft_warnings = []
 
     # --- CoinGecko markets(가격·시총·공급·수익률) ---
     mk = _get_json(f"{CG}/coins/markets?vs_currency=usd&ids={cid}"
                    "&price_change_percentage=24h,7d,30d,1y&sparkline=false")
+    mk_err = _cg_error_code(mk)
     m = mk[0] if isinstance(mk, list) and mk else {}
-    if not m:
+    if mk_err:
+        errors.append({"source": "coingecko/markets",
+                       "error": f"HTTP {mk_err}(rate-limit 등) — 가격/시총 미수집"})
+    elif not m:
         errors.append({"source": "coingecko/markets", "error": "데이터 없음(id 해석 실패 가능)"})
 
-    # --- CoinGecko detail(카테고리·커뮤니티·개발) ---
-    det = _get_json(f"{CG}/coins/{cid}?localization=false&tickers=false&market_data=false"
-                    "&community_data=true&developer_data=true&sparkline=false") or {}
+    # 신원 교차검증 — 해석된 코인 심볼 ≠ 입력 base면 오자산(추측 id가 우연히 타 코인과 일치 등).
+    # 정상 데이터처럼 보이는 틀린 토크노믹스가 밸류에이션·사이징으로 흐르지 않게 결과 폐기.
+    # (alias 경로는 큐레이션 정본 id라 면제 — MATIC→POL·XBT→BTC·RNDR→RENDER 등
+    #  심볼 리네임/이형 표기가 정상적으로 불일치하므로 폐기 대상 아님)
+    m_sym = (m.get("symbol") or "").upper()
+    if m_sym and m_sym != res["base"].upper() and res["method"] != "alias":
+        return {
+            "input": symbol,
+            "resolved": res,
+            "identity": {"id": cid, "symbol": m_sym, "name": m.get("name")},
+            "data_status": "identity_mismatch",
+            "yfinance_symbol": None,
+            "soft_warnings": [],
+            "errors": errors + [{
+                "source": "resolve",
+                "error": (f"해석된 코인 '{m.get('name')}({m_sym})' ≠ 입력 심볼 '{res['base']}' — "
+                          "오자산 분석 방지를 위해 결과 폐기. 정확한 CoinGecko id/심볼로 재시도 필요"),
+            }],
+        }
+
+    # --- CoinGecko detail(카테고리·커뮤니티·개발) --- 실패 시 categories=[] → archetype 오분류 위험
+    det_raw = _get_json(f"{CG}/coins/{cid}?localization=false&tickers=false&market_data=false"
+                        "&community_data=true&developer_data=true&sparkline=false")
+    det_err = _cg_error_code(det_raw)
+    det = det_raw if isinstance(det_raw, dict) and not det_err else {}
+    archetype_uncertain = False
+    if det_err or not det:
+        archetype_uncertain = True
+        errors.append({"source": "coingecko/detail",
+                       "error": (f"HTTP {det_err}(rate-limit 등)" if det_err else "데이터 없음")
+                                + " — 카테고리 미수집, archetype 분류 불확실"})
     categories = [c for c in (det.get("categories") or []) if c]
     dev = det.get("developer_data") or {}
 
@@ -355,6 +429,10 @@ def crypto_overview(symbol: str) -> dict:
     vol = m.get("total_volume")
 
     archetype, archetype_note = _classify(cid, res["base"], categories)
+    if archetype_uncertain and archetype in ("BTC", "stablecoin"):
+        archetype_uncertain = False  # id/심볼 기반 분류 — 카테고리 불필요
+    if archetype_uncertain:
+        archetype_note += " ⚠️ 카테고리 미수집 — 분류 신뢰 낮음(WebSearch로 확인 권장)"
 
     # --- 토크노믹스(희석·발행 진행·유동성) ---
     tokenomics = {
@@ -371,12 +449,20 @@ def crypto_overview(symbol: str) -> dict:
     }
 
     # --- 네트워크 가치 / 평가 멀티플 (아키타입별) ---
-    network = {"archetype": archetype, "note": archetype_note}
+    network = {"archetype": archetype, "archetype_uncertain": archetype_uncertain,
+               "note": archetype_note}
     if archetype == "BTC":
         network["onchain"] = _btc_onchain(mcap)
         network["stock_to_flow"] = _btc_stock_to_flow(circ)
     else:
         dl = _defillama_chain(cid) or _defillama_protocol(cid)
+        if dl and dl.get("kind") == "chain" and archetype == "기타/토큰":
+            # 2차 판정: DefiLlama 체인 매칭 → L1 승격(카테고리 미수집 시 오분류 복구)
+            archetype = "L1"
+            network["archetype"] = archetype
+            network["note"] = ("L1 — 체인 수수료/매출 P/F·P/S, TVL, mcap/TVL, 실질 스테이킹 수익률로 평가"
+                               " (DefiLlama 체인 매칭 2차 판정"
+                               + ("; 카테고리 미수집 보완" if archetype_uncertain else "") + ")")
         if dl:
             fee_ann = dl.get("fees_annualized_usd")
             rev_ann = dl.get("revenue_annualized_usd")
@@ -387,14 +473,42 @@ def crypto_overview(symbol: str) -> dict:
                 "ps_ratio": _round(_safe_div(mcap, rev_ann), 1),       # 시총/연매출(프로토콜 수익)
                 "mcap_to_tvl": _round(_safe_div(mcap, tvl), 2),
                 "fdv_to_fees": _round(_safe_div(fdv, fee_ann), 1),
-                "note": "P/F=시총/연환산 수수료(체인·프로토콜 경제활동 대비 밸류). 낮을수록 저평가. "
-                        "mcap/TVL<1=예치자본 대비 저평가 경향.",
+                "note": "P/F=시총/연환산 수수료(체인은 자체 가스 수수료만 — 생태계 dApp 합산 제외). "
+                        "낮을수록 저평가. mcap/TVL<1=예치자본 대비 저평가 경향.",
             }
         else:
             network["valuation_multiples"] = None
             network["note"] += " | DefiLlama 수수료/TVL 미매칭 — P/F·P/S는 crypto-analyst가 WebSearch 보강"
     network["onchain_deep_note"] = ("MVRV·실현가·SOPR·거래소 순유입은 키리스 미제공 — "
                                     "crypto-analyst가 WebSearch(Glassnode/CryptoQuant 공개치)로 보강")
+
+    # --- yfinance 심볼 교차검증(근본 대책) — Yahoo 동명 심볼 충돌로 '다른 자산' 분석 차단 ---
+    yf_sym = res["yf_symbol"]
+    cg_price = m.get("current_price")
+    yf_check = {"symbol": res["yf_symbol"], "status": "unverified",
+                "yf_price_usd": None, "coingecko_price_usd": cg_price,
+                "deviation_pct": None, "threshold_pct": 20}
+    if yf_sym and cg_price:
+        yf_price = _yf_price_usd(yf_sym)
+        if yf_price is not None:
+            yf_check["yf_price_usd"] = yf_price
+            dev_pct = abs(yf_price / cg_price - 1) * 100
+            yf_check["deviation_pct"] = _round(dev_pct, 1)
+            if dev_pct > 20:
+                yf_check["status"] = "mismatch(동명 타 자산 의심)"
+                soft_warnings.append(
+                    f"yfinance '{yf_sym}' 가격(${yf_price:,.6g})이 CoinGecko(${cg_price:,.6g})와 "
+                    f"{_round(dev_pct, 0)}% 괴리 — 동명 타 토큰 의심. yfinance_symbol=null 처리. "
+                    "technical/risk/momentum 실행 금지(정확한 Yahoo 심볼 수동 확인 후 YF_OVERRIDE 등록)")
+                yf_sym = None
+            else:
+                yf_check["status"] = "validated(CoinGecko 대비 ±20% 이내)"
+        else:
+            yf_check["status"] = "unverified(Yahoo 조회 실패)"
+            soft_warnings.append(f"yfinance 심볼 '{yf_sym}' 교차검증 불가(Yahoo 조회 실패) — "
+                                 "technical/risk/momentum 실행 전 자산명 일치 확인 권장")
+    elif yf_sym:
+        yf_check["status"] = "unverified(CoinGecko 가격 없음 — 교차검증 불가)"
 
     return {
         "input": symbol,
@@ -427,12 +541,16 @@ def crypto_overview(symbol: str) -> dict:
             "dev_commits_4w": dev.get("commit_count_4_weeks"),
             "github_stars": dev.get("stars"),
         },
-        "yfinance_symbol": res["yf_symbol"],
+        "yfinance_symbol": yf_sym,
+        "yfinance_symbol_check": yf_check,
         "data_sources": "CoinGecko(가격·토크노믹스·카테고리) + DefiLlama(TVL·수수료·매출) + "
                         "Blockchain.com(BTC 온체인) — 전부 키리스",
         "caveats": "MVRV/실현가/SOPR/거래소순유입/언락일정은 키리스 미제공 → WebSearch 보강 필요. "
-                   "기술적·리스크·모멘텀은 `cli.py technical|risk|momentum " + res["yf_symbol"] + "` 사용.",
+                   + (f"기술적·리스크·모멘텀은 `cli.py technical|risk|momentum {yf_sym}` 사용."
+                      if yf_sym else
+                      "yfinance 심볼 교차검증 실패 — technical/risk/momentum은 올바른 Yahoo 심볼 확인 후 실행."),
         "errors": errors,
+        "soft_warnings": soft_warnings,
     }
 
 
@@ -460,19 +578,76 @@ def crypto_market() -> dict:
         prices = {c["id"]: c.get("current_price") for c in eb}
         eth_btc = _round(_safe_div(prices.get("ethereum"), prices.get("bitcoin")), 5)
 
-    # 크립토 섹터 로테이션 — 카테고리별 24h 시총변화 랭킹(발굴)
-    cats = _get_json(f"{CG}/coins/categories") or []
+    # 크립토 섹터 로테이션 — 시총>$1B 카테고리를 7d/30d 시총가중 수익률로 랭킹(발굴).
+    # 24h 단일 지표는 마이크로캡 스파이크 노이즈(하이프 꼭지 추종 위험) → 보조 컬럼으로 강등.
+    # 주식 sector_scan(21/63/126일 다기간)과 규격 정렬 — 지속성 있는 자금흐름만 상위 랭크.
+    cats = _get_json(f"{CG}/coins/categories")
     sectors = []
-    if isinstance(cats, list):
-        ranked = sorted([c for c in cats if c.get("market_cap_change_24h") is not None],
-                        key=lambda c: c.get("market_cap_change_24h"), reverse=True)
-        for c in ranked[:8]:
-            sectors.append({
-                "category": c.get("name"),
-                "market_cap_usd": _round(c.get("market_cap"), 0),
-                "change_24h_pct": _round(c.get("market_cap_change_24h"), 2),
-                "top_coins": [t for t in (c.get("top_3_coins_id") or c.get("top_3_coins") or [])][:3],
-            })
+    rotation_method = None
+    if isinstance(cats, list) and cats:
+        big = [c for c in cats
+               if (c.get("market_cap") or 0) > 1e9 and c.get("market_cap_change_24h") is not None]
+        # 대표 코인(top_3_coins_id) 취합 → 벌크 1회 조회로 7d/30d 확보(레이트리밋 최소화)
+        rep_ids = []
+        for c in big:
+            for i in (c.get("top_3_coins_id") or []):
+                if i and i not in rep_ids:
+                    rep_ids.append(i)
+        by_id = {}
+        if rep_ids:
+            bulk_url = (f"{CG}/coins/markets?vs_currency=usd&ids={','.join(rep_ids[:250])}"
+                        "&price_change_percentage=7d,30d&per_page=250")
+            mkc = _get_json(bulk_url)
+            if not isinstance(mkc, list):  # 429 등 일시 실패 — 백오프 후 1회 재시도(발굴 엔진 핵심 호출)
+                time.sleep(5)
+                mkc = _get_json(bulk_url)
+            if isinstance(mkc, list):
+                by_id = {c["id"]: c for c in mkc if c.get("id")}
+
+        def _wavg(reps, key):
+            """대표 코인들의 시총가중 평균 수익률 — 카테고리 수익률 프록시."""
+            pairs = [(r.get("market_cap") or 0, r.get(key)) for r in reps]
+            pairs = [(wi, v) for wi, v in pairs if v is not None and wi]
+            tot = sum(wi for wi, _ in pairs)
+            return _round(sum(wi * v for wi, v in pairs) / tot, 2) if tot else None
+
+        scored = []
+        for c in big:
+            reps = [by_id[i] for i in (c.get("top_3_coins_id") or []) if i in by_id]
+            r7 = _wavg(reps, "price_change_percentage_7d_in_currency")
+            r30 = _wavg(reps, "price_change_percentage_30d_in_currency")
+            if r7 is None and r30 is None:
+                continue
+            score = 0.6 * (r7 or 0) + 0.4 * (r30 or 0)  # 지속성 블렌드(7d 주, 30d 보조)
+            scored.append((score, c, r7, r30))
+        if scored:
+            scored.sort(key=lambda t: t[0], reverse=True)
+            rotation_method = ("시총>$1B 카테고리 대상, 대표 상위3코인 시총가중 "
+                               "7d(60%)+30d(40%) 블렌드 랭킹. 24h는 보조 컬럼(단기 노이즈).")
+            for score, c, r7, r30 in scored[:8]:
+                sectors.append({
+                    "category": c.get("name"),
+                    "market_cap_usd": _round(c.get("market_cap"), 0),
+                    "ret_7d_pct": r7, "ret_30d_pct": r30,
+                    "rotation_score": _round(score, 2),
+                    "change_24h_pct": _round(c.get("market_cap_change_24h"), 2),
+                    "top_coins": [t for t in (c.get("top_3_coins_id") or c.get("top_3_coins") or [])][:3],
+                })
+        elif big:
+            # 폴백: 7d/30d 벌크 조회 실패(429 등) — 24h 랭킹($1B 필터 유지) + degraded 명시
+            errors.append({"source": "coingecko/markets(category reps)",
+                           "error": "7d/30d 벌크 조회 실패 — 24h 단일 랭킹 폴백(지속성 판정 불가)"})
+            rotation_method = "폴백: 시총>$1B 필터 + 24h 랭킹(7d/30d 미수집 — 신호 품질 저하)"
+            for c in sorted(big, key=lambda c: c.get("market_cap_change_24h"), reverse=True)[:8]:
+                sectors.append({
+                    "category": c.get("name"),
+                    "market_cap_usd": _round(c.get("market_cap"), 0),
+                    "ret_7d_pct": None, "ret_30d_pct": None, "rotation_score": None,
+                    "change_24h_pct": _round(c.get("market_cap_change_24h"), 2),
+                    "top_coins": [t for t in (c.get("top_3_coins_id") or c.get("top_3_coins") or [])][:3],
+                })
+    else:
+        errors.append({"source": "coingecko/categories", "error": "데이터 없음"})
 
     # 스테이블코인 총 발행량(= 시장 대기 유동성/순유입 프록시)
     sc = _get_json("https://stablecoins.llama.fi/stablecoins?includePrices=false")
@@ -517,6 +692,7 @@ def crypto_market() -> dict:
         "total_market_cap_usd": _round(total_mcap, 0),
         "total_mcap_change_24h_pct": _round(g.get("market_cap_change_percentage_24h_usd"), 2),
         "sector_rotation": sectors,
+        "sector_rotation_method": rotation_method,
         "stablecoins": {
             "total_circulating_usd": _round(stable_total, 0),
             "total_circulating_bn": _round(_safe_div(stable_total, 1e9), 1),
